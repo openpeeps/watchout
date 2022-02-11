@@ -27,16 +27,14 @@ In Nim language
 
 ```nim
 import watchout
-from std/os import execShellCmd
 from std/strutils import `%`
 
 proc yelling() =
     proc watchoutCallback(file: FileObject) {.gcsafe, closure.} =
-        discard execShellCmd("clear")                           # TODO Watchout for "cleanScreen"
-        echo "✨ Watchout is yelling for changes..."
+        echo "\n✨ Watchout is yelling for changes..."
         echo "\"$1\" has been updated" % [file.getName()]
     
-    var monitor = Watchout.init()
+    var monitor = Watchout.init(cleanOutput = false)
     monitor.addFile("sample.txt", watchoutCallback)
     monitor.start(ms = 400)
 
