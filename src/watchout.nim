@@ -1,7 +1,11 @@
-# This is just an example to get you started. A typical library package
-# exports the main API in this file. Note that you cannot rename this file
-# but you can remove it if you wish.
+import klymene
+import watchout/monitor
 
-proc add*(x, y: int): int =
-  ## Adds two files together.
-  return x + y
+export monitor
+
+when isMainModule:
+    # TODO implement klymene for CLI usage
+    # and calls from other programming languages
+    # 
+    # TODO separate CLI version from Nim library
+    # via nimble flags
