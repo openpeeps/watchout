@@ -4,6 +4,13 @@
 </p>
 
 ## 😍 Key Features
+- [ ] Lightweight & Multi-threading
+- [ ] **Watchout as Nimble** library for **Nim programming** 👑
+- [ ] **Watchout as Binary** for CLI / language agnostic purposes 😎
+- [ ] Yelling for `changes` and `deletions`
+- [ ] `Clean` terminal on update
+- [ ] Yelling for `files` and `directories`
+- [ ] Sleep time in `ms`
 - [x] Open Source | `MIT` license
 
 ## Installing
@@ -21,16 +28,20 @@ In Nim language
 ```nim
 import watchout
 from std/os import execShellCmd
+from std/strutils import `%`
 
-proc watchoutCallback(file: File) {.gcsafe, closure.} =
-    discard execShellCmd("clear")                           # TODO Watchout for "cleanScreen"
-    echo "✨ Watchout is yelling for changes..."
-    echo "\"$1\" has been updated" % [file.getName()]
+proc yelling() =
+    proc watchoutCallback(file: FileObject) {.gcsafe, closure.} =
+        discard execShellCmd("clear")                           # TODO Watchout for "cleanScreen"
+        echo "✨ Watchout is yelling for changes..."
+        echo "\"$1\" has been updated" % [file.getName()]
+    
+    var monitor = Watchout.init()
+    monitor.addFile("sample.txt", watchoutCallback)
+    monitor.start(ms = 400)
 
 when isMainModule:
-    var watch = Watchout.init(cleanScreen = true)
-    watch.addFile("sample.txt", watchoutCallback)
-    watch.start(400)
+    yelling()
 ```
 
 ## Roadmap
