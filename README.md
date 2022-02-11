@@ -1,5 +1,5 @@
 <p align="center">
-    <img src="https://raw.githubusercontent.com/openpeep/watchout/main/.github/logo.png" width="165px"><br>
+    <img src="https://raw.githubusercontent.com/openpeep/watchout/main/.github/logo.png" width="170px"><br>
     🐶 A super small, language agnostic File System Monitor for development purposes
 </p>
 
