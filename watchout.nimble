@@ -2,7 +2,7 @@
 
 version       = "0.1.0"
 author        = "George Lemon"
-description   = "🐶 A super small, language agnostic File System Monitor for development purposes"
+description   = "⚡️ Just... yellin' for changes! File System Monitor for devs"
 license       = "MIT"
 srcDir        = "src"
 bin           = @["watchout"]
