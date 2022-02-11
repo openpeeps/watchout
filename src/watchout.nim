@@ -1,7 +1,6 @@
 # import klymene
 import watchout/monitor
 from std/strutils import `%`
-
 export monitor
 
 proc yelling() =

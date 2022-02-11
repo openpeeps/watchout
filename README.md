@@ -1,6 +1,7 @@
 <p align="center">
     <img src="https://raw.githubusercontent.com/openpeep/watchout/main/.github/watchout-logo.png" width="170px"><br>
-    🐶 A super small, language agnostic File System Monitor for development purposes
+    🐕 Fast, small, language agnostic <strong>File System Monitor for devs</strong><br>
+    ⚡️ Just... yellin' for changes! (WIP)
 </p>
 
 ## 😍 Key Features
