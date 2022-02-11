@@ -63,7 +63,7 @@ proc cleanOutputIfEnabled[T: Watchout](monitor: T) =
     if monitor.cleanOutput: discard execShellCmd("clear")
 
 proc getPath*[T: FileObject](f: T): string = f.path
-proc getName(f: string): string = splitPath(f.path).tail
+proc getName(f: string): string = splitPath(f).tail
 proc getName*[T: FileObject](f: T): string = getName(f.path)
 
 proc addFile*[T: Watchout](monitor: var T, f: string, callback: proc(file: FileObject){.gcsafe, closure.}) =
