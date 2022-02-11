@@ -6,38 +6,41 @@
 # https://github.com/openpeep/watchout
 
 from std/times import Time
-from std/os import getLastModificationTime, sleep, fileExists
+from std/os import getLastModificationTime, sleep, fileExists, splitPath
 from std/strutils import `%`
 import std/tables
 
 type
-    File = object
+    FileObject* = ref object
         path: string
-        callback: proc(){.gcsafe, closure.}
+        callback: proc(file: FileObject){.gcsafe, closure.}
         last_modified: Time
 
-    Monitor* = object
+    Watchout* = object
         ref_files: seq[string]
-        files: OrderedTable[string, File]
+        files: OrderedTable[string, FileObject]
         sleepTime: int
         excludeEmptyFiles: bool                    # TODO Exclude monitoring files with no contents
         informEmptyFiles: bool                     # TODO Print a info message in case a file has no contents
     
     FSNotifyException* = object of CatchableError
 
-proc init*[T: typedesc[Monitor]](monitor: T, informEmptyFiles, excludeEmptyFiles = false): Monitor =
-    ## Initialize an instance of Monitor object
-    Monitor(informEmptyFiles: informEmptyFiles, excludeEmptyFiles: excludeEmptyFiles)
+proc init*[T: typedesc[Watchout]](monitor: T, informEmptyFiles, excludeEmptyFiles = false): Watchout =
+    ## Initialize an instance of Watchout object
+    Watchout(informEmptyFiles: informEmptyFiles, excludeEmptyFiles: excludeEmptyFiles)
 
-proc addFile*[T: Monitor](monitor: var T, f: string, cb: proc(){.gcsafe, closure.}) =
+proc addFile*[T: Watchout](monitor: var T, f: string, callback: proc(file: FileObject){.gcsafe, closure.}) =
     ## Add a new file for monitoring live changes with callback procedure
     if f.fileExists():
         if not monitor.files.hasKey(f):
-            monitor.files[f] = File(callback: cb, path: f, last_modified: getLastModificationTime(f))
+            monitor.files[f] = FileObject(callback: callback, path: f, last_modified: getLastModificationTime(f))
             monitor.ref_files.add(f)
     else: raise newException(FSNotifyException, "File does not exist:\n$1" % [f])
 
-proc start*[T: Monitor](monitor: var T, ms: int) =
+proc getPath*[T: FileObject](f: T): string = f.path
+proc getName*[T: FileObject](f: T): string = splitPath(f.path).tail
+
+proc start*[T: Watchout](monitor: var T, ms: int) =
     ## Start monitoring over collected files
     var i = 1
     let allFiles = monitor.ref_files.len
@@ -48,7 +51,7 @@ proc start*[T: Monitor](monitor: var T, ms: int) =
         if filePathID.fileExists():
             let updateLastModified = getLastModificationTime(fobj.path)
             if fobj.last_modified != updateLastModified:
-                fobj.callback()
+                fobj.callback(fobj)
                 fobj.last_modified = updateLastModified
                 monitor.files[filePathID] = fobj
         inc i
