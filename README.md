@@ -4,15 +4,34 @@
 </p>
 
 ## 😍 Key Features
-- [x] Made with Love
-- [x] ...
-- [x] Open Source
+- [x] Open Source | `MIT` license
 
 ## Installing
-_installation description_
+```
+nimble install watchout
+```
 
 ## Examples
-_to add working examples_
+
+Quick example using Watchout as a standalone binary app
+_todo_
+
+In Nim language
+
+```nim
+import watchout
+from std/os import execShellCmd
+
+proc watchoutCallback(file: File) {.gcsafe, closure.} =
+    discard execShellCmd("clear")                           # TODO Watchout for "cleanScreen"
+    echo "✨ Watchout is yelling for changes..."
+    echo "\"$1\" has been updated" % [file.getName()]
+
+when isMainModule:
+    var watch = Watchout.init(cleanScreen = true)
+    watch.addFile("sample.txt", watchoutCallback)
+    watch.start(400)
+```
 
 ## Roadmap
 _to add roadmap_
