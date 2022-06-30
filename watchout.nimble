@@ -5,8 +5,6 @@ author        = "George Lemon"
 description   = "⚡️ Just... yellin' for changes! File System Monitor for devs"
 license       = "MIT"
 srcDir        = "src"
-bin           = @["watchout"]
-binDir        = "bin"
 
 # Dependencies
 
