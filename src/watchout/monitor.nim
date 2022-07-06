@@ -7,9 +7,6 @@ from std/osproc import execProcess, poStdErrToStdOut, poUsePath
 
 export typeinfo
 
-when not compileOption("threads"):
-    raise newException(FSNotifyException, "Watchout requires --threads:on")
-
 type
     File* = ref object
         path: string
@@ -24,6 +21,9 @@ type
         callback: Callback
     
     FSNotifyException* = object of CatchableError
+
+when not compileOption("threads"):
+    raise newException(FSNotifyException, "Watchout requires --threads:on")
 
 var
     l: Lock
