@@ -50,10 +50,9 @@ proc addFile*[W: Watchout](monitor: var W, f: string) =
     else: raise newException(FSNotifyException, "File does not exist:\n$1" % [f])
 
 proc start(arg: (seq[string], Callback, int)) {.thread.} =
-    {.gcsafe.}:
-        m.callback = arg[1]
-        for path in arg[0]:
-            m.addFile path
+    m.callback = arg[1]
+    for path in arg[0]:
+        m.addFile path
     var i = 1
     let allFiles = arg[0].len
     while true:
@@ -67,19 +66,6 @@ proc start(arg: (seq[string], Callback, int)) {.thread.} =
                     m.files[file.path] = file 
             else:
                 echo "File $1 has been deleted" % [k.getName]
-        # if i > allFiles: i = 1
-        # let filePathID = arg[0][i - 1]
-        # {.gcsafe.}:
-        #     var fobj = m.files[filePathID]
-        #     if filePathID.fileExists():
-        #         let updateLastModified = getLastModificationTime(fobj.path)
-        #         if fobj.lastModified != updateLastModified:
-        #             # m.cleanOutputIfEnabled()
-        #             m.callback(fobj)
-        #             fobj.lastModified = updateLastModified
-        #             m.files[filePathID] = fobj
-        #     else:
-        #         echo "File $1 has been deleted." % [getName(filePathId)]
         sleep(arg[2])
 
 template startThread*[W: typedesc[Watchout]](monitor: W, callback: Callback, files: seq[string], ms: int) =
