@@ -12,7 +12,7 @@ type
         path: string
         lastModified: Time
 
-    Callback* = proc(file: File) {.gcsafe.}
+    Callback* = proc(file: File) {.thread, nimcall.} 
 
     Watchout* = object
         ref_files: seq[string]
@@ -68,7 +68,7 @@ proc start(arg: (seq[string], Callback, int)) {.thread.} =
                 echo "File $1 has been deleted" % [k.getName]
         sleep(arg[2])
 
-template startThread*[W: typedesc[Watchout]](monitor: W, callback: Callback, files: seq[string], ms: int, shouldJoinThread = false) =
+template startThread*(callback: Callback, files: seq[string], ms: int, shouldJoinThread = false) =
     createThread(thr, start, (files, callback, ms))
     if shouldJoinThread:
         joinThread(thr)
