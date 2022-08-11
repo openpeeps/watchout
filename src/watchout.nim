@@ -12,7 +12,7 @@ type
         path: string
         lastModified: Time
 
-    Callback* = proc(file: File) {.thread, nimcall.} 
+    Callback* = proc(file: File) {.closure.} 
 
     Watchout* = object
         ref_files: seq[string]
@@ -50,25 +50,26 @@ proc addFile*[W: Watchout](monitor: var W, f: string) =
     else: raise newException(FSNotifyException, "File does not exist:\n$1" % [f])
 
 proc start(arg: (seq[string], Callback, int)) {.thread.} =
-    m.callback = arg[1]
-    for path in arg[0]:
-        m.addFile path
-    var i = 1
-    let allFiles = arg[0].len
-    while true:
-        for k, file in m.files.mpairs():
-            if likely(fileExists(k)):
-                let updateLastModified = getLastModificationTime(file.path)
-                if file.lastModified != updateLastModified:
-                    # m.cleanOutputIfEnabled()
-                    m.callback(file)
-                    file.lastModified = updateLastModified
-                    m.files[file.path] = file 
-            else:
-                echo "File $1 has been deleted" % [k.getName]
-        sleep(arg[2])
+    {.gcsafe.}:
+        m.callback = arg[1]
+        for path in arg[0]:
+            m.addFile path
+        var i = 1
+        let allFiles = arg[0].len
+        while true:
+            for k, file in m.files.mpairs():
+                if likely(fileExists(k)):
+                    let updateLastModified = getLastModificationTime(file.path)
+                    if file.lastModified != updateLastModified:
+                        # m.cleanOutputIfEnabled()
+                        m.callback(file)
+                        file.lastModified = updateLastModified
+                        m.files[file.path] = file 
+                else:
+                    echo "File $1 has been deleted" % [k.getName]
+            sleep(arg[2])
 
-template startThread*(callback: Callback, files: seq[string], ms: int, shouldJoinThread = false) =
+proc startThread*(callback: Callback, files: seq[string], ms: int, shouldJoinThread = false) =
     createThread(thr, start, (files, callback, ms))
     if shouldJoinThread:
         joinThread(thr)
