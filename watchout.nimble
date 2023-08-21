@@ -2,7 +2,7 @@
 
 version       = "0.1.0"
 author        = "George Lemon"
-description   = "⚡️ Just... yellin' for changes! A fast file system monitor, browser syncing & reloader"
+description   = "⚡️ Just... yellin' for changes"
 license       = "MIT"
 srcDir        = "src"
 
