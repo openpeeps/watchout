@@ -1,76 +1,129 @@
-import std/[tables, typeinfo, times, os, strutils]
+# A stupid simple filesystem monitor.
+#
+#   (c) George Lemon | MIT License
+#   Made by humans from OpenPeeps
+#   https://gitnub.com/openpeeps/watchout
 
-export typeinfo
-
-type
-  File* = ref object
-    path: string
-    lastModified: Time
-
-  Callback* = proc(file: File) {.closure.} 
-
-  Watchout* = object
-    entries: OrderedTableRef[string, File]
-    callback: Callback
-  
-  WatchoutException* = object of CatchableError
+import std/[locks, os, tables, hashes, times]
 
 when not compileOption("threads"):
   raise newException(WatchoutException, "Watchout requires --threads:on")
 
-var
-  m {.threadvar}: Watchout
-  thr: Thread[(seq[string], Callback, int)]
+var wlocker: Lock
+type
+  File* = object
+    path: string
+    lastModified: Time
 
-proc getPath*[F: File](f: F): string = f.path
-proc getName(f: string): string = splitPath(f).tail
-proc getName*[F: File](f: F): string = getName(f.path)
+  WatchCallback* = proc(file: File) {.closure.}
 
-template walkHandler() {.dirty.} =
-  monitor.entries[entry] = new File
-  monitor.entries[entry].path = entry
-  monitor.entries[entry].lastModified = getLastModificationTime(entry)
+  Watchout* = ref object
+    pattern: string
+    dirs: seq[string]
+    delay: range[200..5000] 
+    files {.guard: wlocker.}: Table[string, File]
+    onChange, onFound, onDelete: WatchCallback
+    recursive: bool
 
-proc add(monitor: var Watchout, f: string) {.thread.} =
-  if likely(f.fileExists):
-    if likely(not monitor.entries.hasKey(f)):
-      var entry = f
-      walkHandler()
-    else: raise newException(WatchoutException, "Duplicate file in Watchout monitor:\n$1" % [f])
-  elif f.dirExists:
-    for entry in walkDirRec(f):
-      if entry.isHidden or monitor.entries.hasKey(f): continue
-      walkHandler
-  elif f.parentDir.dirExists:
-    for entry in walkPattern(f):
-      if entry.isHidden or monitor.entries.hasKey(f): continue
-      walkHandler
-  else: raise newException(WatchoutException, "File does not exist:\n$1" % [f])
+var thr: array[0..1, Thread[Watchout]]
 
-proc start(arg: (seq[string], Callback, int)) {.thread.} =
-  {.gcsafe.}:
-    m.callback = arg[1]
-    m.entries = newOrderedTable[string, File]()
-    for p in arg[0]:
-      m.add(p)
+proc handleIndex(watch: Watchout) {.thread.} =
+  # todo ignore hidden files?
+  if watch.pattern.len > 0:
     while true:
-      for path, file in m.entries.mpairs():
-        if likely(path.fileExists or path.dirExists):
-          let updateLastModified = getLastModificationTime(file.path)
-          if file.lastModified != updateLastModified:
-            m.callback(file)
-            file.lastModified = updateLastModified
-            m.entries[file.path] = file 
-        else:
-          echo "File $1 has been deleted" % [path.getName]
-          m.entries.del(path)
-      sleep(arg[2])
+      for f in walkFiles(watch.pattern):
+        withLock wlocker:
+          {.gcsafe.}:
+            let fpath = absolutePath(f)
+            if not watch.files.hasKey(fpath):
+              let finfo = fpath.getFileInfo
+              var file = File(path: fpath, lastModified: finfo.lastWriteTime)
+              watch.files[fpath] = file
+              if watch.onFound != nil:
+                watch.onFound(file)
+              else:
+                watch.onChange(file)
+      sleep(watch.delay * 2) # todo idle mode
+  else:
+    while true:
+      for dir in watch.dirs:
+        for path in walkPattern(dir):
+          let finfo = path.getFileInfo
+          case finfo.kind
+          of pcFile:
+            withLock wlocker:
+              {.gcsafe.}:
+                let fpath = absolutePath(path)
+                if not watch.files.hasKey(fpath): 
+                  var file = File(path: fpath, lastModified: finfo.lastWriteTime)
+                  watch.files[fpath] = file
+                  if watch.onFound != nil:
+                    watch.onFound(file)
+                  else:
+                    watch.onChange(file)
+          of pcDir:
+            # todo recursive walk when pattern
+            # contains ext /some/dir/*.txt
+            for f in walkDirRec(path):
+              withLock wlocker:
+                {.gcsafe.}:
+                  let finfo = f.getFileInfo
+                  let fpath = absolutePath(f)
+                  if not watch.files.hasKey(fpath):
+                    var file = File(path: fpath, lastModified: finfo.lastWriteTime)
+                    watch.files[fpath] = file
+                    if watch.onFound != nil:
+                      watch.onFound(file)
+                    else:
+                      watch.onChange(file)
+          else: discard # todo support symlinks ?
+      sleep(watch.delay * 2) # todo idle mode
 
-proc startThread*(callback: Callback, files: seq[string], ms: int, shouldJoinThread = false) =
-  ## Run Watchout in a separate thread 
-  createThread(thr, start, (files, callback, ms))
-  if shouldJoinThread:
-    joinThread(thr)
+proc handleChanges(watch: Watchout) {.thread.} =
+  while true:
+    withLock wlocker:
+      {.gcsafe.}:
+        if watch.files.len > 0:
+          var queue: seq[string]
+          for fpath, file in mpairs(watch.files):
+            if likely(fpath.fileExists):
+              let finfo = fpath.getFileInfo
+              if finfo.lastWriteTime > file.lastModified:
+                file.lastModified = finfo.lastWriteTime
+                watch.onChange(file)
+            else:
+              if watch.onDelete != nil:
+                watch.onDelete(file)
+              queue.add(fpath)
+          for f in queue:
+            watch.files.del(f)
+    sleep(watch.delay)
 
-# proc spawnProcess*(callback: Callback, files: seq[string], ms: int) =
-#   spawn start((files, callback, ms))
+proc newWatchout*(pattern: string, onChange: WatchCallback, onFound,
+    onDelete: WatchCallback = nil, delay: range[200..5000] = 350): Watchout =
+  ## Creates a new `Watchout` instance that discovers files based on `pattern`,
+  ## For example: `./some/*.nims`
+  Watchout(pattern: pattern, delay: delay, onChange: onChange, onFound: onFound, onDelete: onDelete)
+
+proc newWatchout*(dirs: seq[string], onChange: WatchCallback, onFound,
+    onDelete: WatchCallback = nil, delay: range[200..5000] = 350,
+    recursive = false): Watchout =
+  ## Creates a new `Watchout` instance that discovers files
+  ## based on given `dirs` directories. 
+  ## For example: `@["../some/*.json", "./tests/*.nims"]`
+  Watchout(dirs: dirs, delay: delay, onChange: onChange,
+    onFound: onFound, onDelete: onDelete, recursive: recursive)
+
+proc getPath*(file: File): string =
+  result = file.path
+
+template lockit(x: typed) =
+  initLock(wlocker)
+  x
+  deinitLock(wlocker)
+
+proc start*(w: Watchout, waitThreads = false) =
+  lockit:
+    createThread(thr[0], handleIndex, w)
+    createThread(thr[1], handleChanges, w)
+    if waitThreads: joinThreads(thr)
