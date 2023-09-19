@@ -3,15 +3,13 @@
     🐕 Fast, small, language agnostic <strong>File System Monitor for devs</strong><br>
     ⚡️ Just... yellin' for changes! (WIP)
 </p>
+<p align="center">
+  <a href="https://openpeeps.github.io/watchout/theindex.html">API reference</a> | <a href="#">Download</a> (not yet)<br>
+  <img src="https://github.com/openpeeps/watchout/workflows/test/badge.svg" alt="Github Actions">  <img src="https://github.com/openpeeps/watchout/workflows/docs/badge.svg" alt="Github Actions">
+</p>
 
 ## 😍 Key Features
-- [ ] Lightweight & Multi-threading
-- [ ] **Watchout as Nimble** library for **Nim programming** 👑
-- [ ] **Watchout as Binary** for CLI / language agnostic purposes 😎
-- [ ] Yelling for `changes` and `deletions`
-- [ ] `Clean` terminal on update
-- [ ] Yelling for `files` and `directories`
-- [ ] Sleep time in `ms`
+todo
 - [x] Open Source | `MIT` license
 
 ## Installing
@@ -20,40 +18,33 @@ nimble install watchout
 ```
 
 ## Examples
-
-Quick example using Watchout as a standalone binary app
-_todo_
-
-In Nim language
-
 ```nim
 import watchout
-from std/strutils import `%`
 
-proc yelling() =
-    proc watchoutCallback(file: FileObject) {.gcsafe, closure.} =
-        echo "\n✨ Watchout is yelling for changes..."
-        echo "\"$1\" has been updated" % [file.getName()]
-    
-    var monitor = Watchout.init(cleanOutput = false)
-    monitor.addFile("sample.txt", watchoutCallback)
-    monitor.start(ms = 400)
+proc onFound(file: File) =
+  echo "Found"
+  echo file.getPath
 
-when isMainModule:
-    yelling()
+proc onChange(file: File) =
+  echo "Changed"
+  echo file.getPath
+
+proc onDelete(file: File) =
+  echo "Deleted"
+  echo file.getPath
+
+var w = newWatchout("../tests/*.nim", onChange, onFound, onDelete)
+w.start(waitThreads = true)
 ```
 
-## Roadmap
-_to add roadmap_
 
-### ❤ Contributions
-If you like this project you can contribute to Watchout by opening new issues, fixing bugs, contribute with code, ideas and you can even [donate via PayPal address](https://www.paypal.com/donate/?hosted_button_id=RJK3ZTDWPL55C) 🥰
-
-### 👑 Discover Nim language
-<strong>What's Nim?</strong> Nim is a statically typed compiled systems programming language. It combines successful concepts from mature languages like Python, Ada and Modula. [Find out more about Nim language](https://nim-lang.org/)
-
-<strong>Why Nim?</strong> Performance, fast compilation and C-like freedom. We want to keep code clean, readable, concise, and close to our intention. Also a very good language to learn in 2022.
+### ❤ Contributions & Support
+- 🐛 Found a bug? [Create a new Issue](https://github.com/openpeeps/watchout/issues)
+- 👋 Wanna help? [Fork it!](https://github.com/openpeeps/watchout/fork)
+- Create a Syntax Highlighter for your favorite code editor. 
+- 😎 [Get €20 in cloud credits from Hetzner](https://hetzner.cloud/?ref=Hm0mYGM9NxZ4)
+- 🥰 [Donate to OpenPeeps via PayPal address](https://www.paypal.com/donate/?hosted_button_id=RJK3ZTDWPL55C)
 
 ### 🎩 License
-Watchout is an Open Source Software released under `MIT` license. [Developed by Humans from OpenPeep](https://github.com/openpeep).<br>
-Copyright &copy; 2022 OpenPeep & Contributors &mdash; All rights reserved.
+Watchout [MIT license](https://github.com/openpeeps/watchout/blob/main/LICENSE).<br>
+Copyright &copy; 2023 OpenPeeps & Contributors &mdash; All rights reserved.
