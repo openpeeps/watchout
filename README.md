@@ -1,7 +1,6 @@
 <p align="center">
     <img src="https://raw.githubusercontent.com/openpeep/watchout/main/.github/watchout-logo.png" width="170px"><br>
-    🐕 Fast, small, language agnostic <strong>File System Monitor for devs</strong><br>
-    ⚡️ Just... yellin' for changes! (WIP)
+    ⚡️ A fast, small, lightweight filesystem monitor. Yellin' for changes!
 </p>
 <p align="center">
   <a href="https://openpeeps.github.io/watchout/theindex.html">API reference</a> | <a href="#">Download</a> (not yet)<br>
