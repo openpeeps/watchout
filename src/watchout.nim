@@ -19,7 +19,7 @@ type
 
   Watchout* = ref object
     pattern: string
-    dirs: seq[string]
+    dirs, ext: seq[string]
     delay: range[200..5000] 
     files {.guard: wlocker.}: Table[string, File]
     onChange, onFound, onDelete: WatchCallback
@@ -62,13 +62,16 @@ proc handleIndex(watch: Watchout) {.thread.} =
                   else:
                     watch.onChange(file)
           of pcDir:
-            # todo recursive walk when pattern
-            # contains ext /some/dir/*.txt
+            var hasExt = watch.ext.len != 0
             for f in walkDirRec(path):
               withLock wlocker:
                 {.gcsafe.}:
                   let finfo = f.getFileInfo
                   let fpath = absolutePath(f)
+                  if hasExt:
+                    let sf = splitFile(f.extractFilename)
+                    if sf.ext[1..^1] notin watch.ext:
+                      continue
                   if not watch.files.hasKey(fpath):
                     var file = File(path: fpath, lastModified: finfo.lastWriteTime)
                     watch.files[fpath] = file
@@ -100,22 +103,27 @@ proc handleChanges(watch: Watchout) {.thread.} =
     sleep(watch.delay)
 
 proc newWatchout*(pattern: string, onChange: WatchCallback, onFound,
-    onDelete: WatchCallback = nil, delay: range[200..5000] = 350): Watchout =
-  ## Creates a new `Watchout` instance that discovers files based on `pattern`,
-  ## For example: `./some/*.nims`
-  Watchout(pattern: pattern, delay: delay, onChange: onChange, onFound: onFound, onDelete: onDelete)
+    onDelete: WatchCallback = nil, delay: range[200..5000] = 350,
+    recursive = false): Watchout =
+  ## Create a new `Watchout` instance that discovers
+  Watchout(pattern: pattern, delay: delay,
+    onChange: onChange, onFound: onFound,
+    onDelete: onDelete, recursive: recursive)
 
 proc newWatchout*(dirs: seq[string], onChange: WatchCallback, onFound,
     onDelete: WatchCallback = nil, delay: range[200..5000] = 350,
-    recursive = false): Watchout =
-  ## Creates a new `Watchout` instance that discovers files
-  ## based on given `dirs` directories. 
+    recursive = false, ext: seq[string] = @[]): Watchout =
+  ## Create a new `Watchout` instance based on multiple `dirs` targets
   ## For example: `@["../some/*.json", "./tests/*.nims"]`
-  Watchout(dirs: dirs, delay: delay, onChange: onChange,
-    onFound: onFound, onDelete: onDelete, recursive: recursive)
+  Watchout(dirs: dirs, delay: delay,
+    onChange: onChange, onFound: onFound,
+    onDelete: onDelete, recursive: recursive, ext: ext)
 
 proc getPath*(file: File): string =
   result = file.path
+
+proc getName*(file: File): string =
+  result = file.path.extractFilename()
 
 template lockit(x: typed) =
   initLock(wlocker)
