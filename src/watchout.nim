@@ -131,7 +131,7 @@ proc handleChanges(watch: Watchout) {.thread.} =
     sleep(watch.delay)
 
 proc newWatchout*(pattern: string, onChange: WatchCallback, onFound,
-    onDelete: WatchCallback = nil, delay: range[200..5000] = 350,
+    onDelete: WatchCallback = nil, delay: range[100..5000] = 350,
     recursive = false, browserSync: WatchoutBrowserSync = nil): Watchout =
   ## Create a new `Watchout` instance that discovers
   Watchout(pattern: pattern, delay: delay,
@@ -140,7 +140,7 @@ proc newWatchout*(pattern: string, onChange: WatchCallback, onFound,
     browserSync: browserSync)
 
 proc newWatchout*(dirs: seq[string], onChange: WatchCallback, onFound,
-    onDelete: WatchCallback = nil, delay: range[200..5000] = 350,
+    onDelete: WatchCallback = nil, delay: range[100..5000] = 350,
     recursive = false, ext: seq[string] = @[],
     browserSync: WatchoutBrowserSync = nil): Watchout =
   ## Create a new `Watchout` instance based on multiple `dirs` targets
@@ -168,6 +168,7 @@ proc runBrowserSync*(x: (Port, int)) {.thread.} =
                 break
             await ws.send("0")
             sleep(x[1])
+          await ws.send("0")
         except WebSocketClosedError:
           echo "Socket closed"
         except WebSocketProtocolMismatchError:
