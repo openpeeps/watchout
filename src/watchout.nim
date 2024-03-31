@@ -50,10 +50,10 @@ template lockit(x: typed) =
   deinitLock(wlocker)
 
 proc handleIndex(watch: Watchout) {.thread.} =
-  # todo ignore hidden files?
   if watch.pattern.len > 0:
     while true:
       for f in walkFiles(watch.pattern):
+        if f.isHidden: continue
         {.gcsafe.}:
           let fpath = absolutePath(f)
           withLock wlocker:
@@ -66,7 +66,8 @@ proc handleIndex(watch: Watchout) {.thread.} =
               else:
                 watch.onChange(file)
               updateTimes()
-      sleep(watch.delay * 2) # todo idle mode
+          deinitLock(wlocker)
+      sleep(watch.delay * 100) # todo idle mode
   else:
     while true:
       for dir in watch.dirs:
@@ -74,6 +75,7 @@ proc handleIndex(watch: Watchout) {.thread.} =
           let finfo = path.getFileInfo
           case finfo.kind
           of pcFile:
+            if path.isHidden: continue
             withLock wlocker:
               {.gcsafe.}:
                 let fpath = absolutePath(path)
@@ -105,8 +107,9 @@ proc handleIndex(watch: Watchout) {.thread.} =
                     else:
                       watch.onChange(file)
                       updateTimes()
+              deinitLock(wlocker)
           else: discard # todo support symlinks ?
-      sleep(watch.delay * 2) # todo idle mode
+      sleep(watch.delay * 100) # todo idle mode
 
 proc handleChanges(watch: Watchout) {.thread.} =
   while true:
@@ -168,6 +171,7 @@ proc runBrowserSync*(x: (Port, int)) {.thread.} =
                 break
             await ws.send("0")
             sleep(x[1])
+          deinitLock(wlocker)
           await ws.send("0")
         except WebSocketClosedError:
           echo "Socket closed"
@@ -191,9 +195,10 @@ proc getLastModified*(file: File): Time =
 
 proc start*(w: Watchout, waitThreads = false) =
   lockit:
-    if w.browserSync != nil:
-      createThread(browserSyncThread, runBrowserSync,
-        (w.browserSync.port, w.browserSync.delay))
+    when not defined release:
+      if w.browserSync != nil:
+        createThread(browserSyncThread, runBrowserSync,
+          (w.browserSync.port, w.browserSync.delay))
     createThread(thr[0], handleIndex, w)
     createThread(thr[1], handleChanges, w)
     if waitThreads: joinThreads(thr)
