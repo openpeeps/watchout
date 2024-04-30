@@ -195,7 +195,7 @@ proc getLastModified*(file: File): Time =
 
 proc start*(w: Watchout, waitThreads = false) =
   lockit:
-    when not defined release:
+    when defined watchoutBrowserSync:
       if w.browserSync != nil:
         createThread(browserSyncThread, runBrowserSync,
           (w.browserSync.port, w.browserSync.delay))
