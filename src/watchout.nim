@@ -50,10 +50,15 @@ template lockit(x: typed) =
   deinitLock(wlocker)
 
 proc handleIndex(watch: Watchout) {.thread.} =
+  var hasExt = watch.ext.len > 0
   if watch.pattern.len > 0:
     while true:
       for f in walkFiles(watch.pattern):
         if f.isHidden: continue
+        if hasExt:
+          let ext = f.splitFile().ext
+          if not watch.ext.contains(ext[1..^1]):
+            continue
         {.gcsafe.}:
           let fpath = absolutePath(f)
           withLock wlocker:
@@ -76,6 +81,10 @@ proc handleIndex(watch: Watchout) {.thread.} =
           case finfo.kind
           of pcFile:
             if path.isHidden: continue
+            if hasExt:
+              let ext = path.splitFile().ext
+              if not watch.ext.contains(ext[1..^1]):
+                continue
             withLock wlocker:
               {.gcsafe.}:
                 let fpath = absolutePath(path)
@@ -88,16 +97,14 @@ proc handleIndex(watch: Watchout) {.thread.} =
                     watch.onChange(file)
                   updateTimes()
           of pcDir:
-            var hasExt = watch.ext.len != 0
-            for f in walkDirRec(path):
+            for f in walkDirRec(path, yieldFilter = {pcFile}):
               withLock wlocker:
                 {.gcsafe.}:
                   let finfo = f.getFileInfo
                   let fpath = absolutePath(f)
-                  if hasExt:
-                    let sf = splitFile(f.extractFilename)
-                    if sf.ext[1..^1] notin watch.ext:
-                      continue
+                  # if hasExt:
+                  #   if not watch.ext.contains("." & splitFile(f).ext):
+                  #     continue
                   if not watch.files.hasKey(fpath):
                     var file = File(path: fpath, lastModified: finfo.lastWriteTime)
                     watch.files[fpath] = file
