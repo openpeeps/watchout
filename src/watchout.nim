@@ -56,8 +56,7 @@ proc handleIndex(watch: Watchout) {.thread.} =
       for f in walkFiles(watch.pattern):
         if f.isHidden: continue
         if hasExt:
-          let ext = f.splitFile().ext
-          if not watch.ext.contains(ext[1..^1]):
+          if not watch.ext.contains(f.splitFile().ext):
             continue
         {.gcsafe.}:
           let fpath = absolutePath(f)
@@ -82,8 +81,7 @@ proc handleIndex(watch: Watchout) {.thread.} =
           of pcFile:
             if path.isHidden: continue
             if hasExt:
-              let ext = path.splitFile().ext
-              if not watch.ext.contains(ext[1..^1]):
+              if not watch.ext.contains(path.splitFile().ext):
                 continue
             withLock wlocker:
               {.gcsafe.}:
@@ -102,9 +100,10 @@ proc handleIndex(watch: Watchout) {.thread.} =
                 {.gcsafe.}:
                   let finfo = f.getFileInfo
                   let fpath = absolutePath(f)
-                  # if hasExt:
-                  #   if not watch.ext.contains("." & splitFile(f).ext):
-                  #     continue
+                  if fpath.isHidden: continue
+                  if hasExt:
+                    if not watch.ext.contains(splitFile(fpath).ext):
+                      continue
                   if not watch.files.hasKey(fpath):
                     var file = File(path: fpath, lastModified: finfo.lastWriteTime)
                     watch.files[fpath] = file
