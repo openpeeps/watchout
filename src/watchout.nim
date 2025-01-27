@@ -9,11 +9,8 @@ import std/[locks, os, tables,
 
 import pkg/[httpx, websocketx]
 
-from std/net import Port
+from std/net import Port, `$`
 export Port
-
-var
-  wlocker: Lock
 
 type
   File* = object
@@ -23,31 +20,26 @@ type
   WatchCallback* = proc(file: File) {.closure.}
   WatchoutBrowserSync* = ref object
     port*: Port
-    delay*: range[200..5000]
+    delay*: range[100..5000]
 
   Watchout* = ref object
     pattern: string
     dirs, ext: seq[string]
-    delay: range[200..5000] 
-    files {.guard: wlocker.}: Table[string, File]
+    delay: range[100..5000] 
+    files {.guard: L.}: TableRef[string, File] = newTable[string, File]()
     onChange, onFound, onDelete: WatchCallback
     recursive: bool
     browserSync: WatchoutBrowserSync
-
-var
-  thr: array[0..1, Thread[Watchout]]
-  browserSyncThread: Thread[(Port, int)]
-  lastModified {.guard: wlocker.}: Time
-  prevModified {.guard: wlocker.}: Time
+    prevModified {.guard: L.}: Time
+    lastModified {.guard: L.}: Time
+    isModified {.guard: L.}: bool
+    L: Lock
 
 template updateTimes {.dirty.} =
-  prevModified = lastModified
-  lastModified = file.lastModified
-
-template lockit(x: typed) =
-  initLock(wlocker)
-  x
-  deinitLock(wlocker)
+  watch.prevModified = watch.lastModified
+  watch.lastModified = file.lastModified
+  if watch.lastModified > watch.prevModified:
+    watch.isModified = true
 
 proc handleIndex(watch: Watchout) {.thread.} =
   var hasExt = watch.ext.len > 0
@@ -60,7 +52,7 @@ proc handleIndex(watch: Watchout) {.thread.} =
             continue
         {.gcsafe.}:
           let fpath = absolutePath(f)
-          withLock wlocker:
+          withLock watch.L:
             if not watch.files.hasKey(fpath):
               let finfo = fpath.getFileInfo
               var file = File(path: fpath, lastModified: finfo.lastWriteTime)
@@ -70,7 +62,6 @@ proc handleIndex(watch: Watchout) {.thread.} =
               else:
                 watch.onChange(file)
               updateTimes()
-          deinitLock(wlocker)
       sleep(watch.delay * 100) # todo idle mode
   else:
     while true:
@@ -83,7 +74,7 @@ proc handleIndex(watch: Watchout) {.thread.} =
             if hasExt:
               if not watch.ext.contains(path.splitFile().ext):
                 continue
-            withLock wlocker:
+            withLock watch.L:
               {.gcsafe.}:
                 let fpath = absolutePath(path)
                 if not watch.files.hasKey(fpath): 
@@ -96,7 +87,7 @@ proc handleIndex(watch: Watchout) {.thread.} =
                   updateTimes()
           of pcDir:
             for f in walkDirRec(path, yieldFilter = {pcFile}):
-              withLock wlocker:
+              withLock watch.L:
                 {.gcsafe.}:
                   let finfo = f.getFileInfo
                   let fpath = absolutePath(f)
@@ -113,13 +104,12 @@ proc handleIndex(watch: Watchout) {.thread.} =
                     else:
                       watch.onChange(file)
                       updateTimes()
-              deinitLock(wlocker)
           else: discard # todo support symlinks ?
       sleep(watch.delay * 100) # todo idle mode
 
 proc handleChanges(watch: Watchout) {.thread.} =
   while true:
-    withLock wlocker:
+    withLock watch.L:
       {.gcsafe.}:
         if watch.files.len > 0:
           var queue: seq[string]
@@ -159,7 +149,7 @@ proc newWatchout*(dirs: seq[string], onChange: WatchCallback, onFound,
     onDelete: onDelete, recursive: recursive, ext: ext,
     browserSync: browserSync)
 
-proc runBrowserSync*(x: (Port, int)) {.thread.} =
+proc runBrowserSync*(x: (Port, int, ptr Lock, ptr bool)) {.thread.} =
   proc onRequest(req: Request) {.async.} =
     if req.httpMethod == some HttpGet:
       case req.path.get:
@@ -169,15 +159,14 @@ proc runBrowserSync*(x: (Port, int)) {.thread.} =
         try:
           var ws = await newWebSocket(req)
           while ws.readyState == Open:
-            withLock wlocker:
-              if lastModified > prevModified:
+            withLock x[2][]:
+              if x[3][]:
                 await ws.send("1")
                 ws.close()
-                prevModified = lastModified
+                x[3][] = false
                 break
             await ws.send("0")
             sleep(x[1])
-          deinitLock(wlocker)
           await ws.send("0")
         except WebSocketClosedError:
           echo "Socket closed"
@@ -199,12 +188,21 @@ proc getName*(file: File): string =
 proc getLastModified*(file: File): Time =
   result = file.lastModified
 
-proc start*(w: Watchout, waitThreads = false) =
-  lockit:
+proc startThread*(w: Watchout) {.thread.} =
+  var threads = newSeq[Thread[Watchout]](2)
+  # var indexThread: Thread[Watchout]
+  # var changesThread: Thread[Watchout]
+  var browserSyncThread: Thread[(Port, int, ptr Lock, ptr bool)]
+  createThread(threads[0], handleIndex, w)
+  createThread(threads[1], handleChanges, w)
+  withLock w.L:
     when defined watchoutBrowserSync:
       if w.browserSync != nil:
         createThread(browserSyncThread, runBrowserSync,
-          (w.browserSync.port, w.browserSync.delay))
-    createThread(thr[0], handleIndex, w)
-    createThread(thr[1], handleChanges, w)
-    if waitThreads: joinThreads(thr)
+          (w.browserSync.port, w.browserSync.delay, addr(w.L), addr(w.isModified)))
+  joinThreads(threads)
+
+proc start*(w: Watchout) =
+  var thr: Thread[Watchout]
+  createThread(thr, startThread, w)
+  sleep(5)
