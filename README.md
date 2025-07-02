@@ -41,7 +41,6 @@ w.start(waitThreads = true)
 - 🐛 Found a bug? [Create a new Issue](https://github.com/openpeeps/watchout/issues)
 - 👋 Wanna help? [Fork it!](https://github.com/openpeeps/watchout/fork)
 - 😎 [Get €20 in cloud credits from Hetzner](https://hetzner.cloud/?ref=Hm0mYGM9NxZ4)
-- 🥰 [Donate to OpenPeeps via PayPal address](https://www.paypal.com/donate/?hosted_button_id=RJK3ZTDWPL55C)
 
 ### 🎩 License
 Watchout [MIT license](https://github.com/openpeeps/watchout/blob/main/LICENSE).<br>
