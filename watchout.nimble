@@ -1,6 +1,6 @@
 # Package
 
-version       = "0.2.1"
+version       = "0.2.2"
 author        = "George Lemon"
 description   = "A stupid simple filesystem monitor"
 license       = "MIT"
@@ -8,5 +8,4 @@ srcDir        = "src"
 
 # Dependencies
 
-requires "nim >= 1.6.0"
-requires "httpx", "websocketx"
+requires "nim >= 2.0.0"

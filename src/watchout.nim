@@ -1,86 +1,69 @@
 # A stupid simple filesystem monitor.
 #
 #   (c) George Lemon | MIT License
-#   Made by humans from OpenPeeps
-#   https://gitnub.com/openpeeps/watchout
+#       Made by humans from OpenPeeps
+#       https://gitnub.com/openpeeps/watchout
 
-import std/[locks, os, tables, hashes,
-    asyncdispatch, times]
+import std/[os, strutils, options, tables, times]
+
+when defined osx:
+  {.passL: "-fobjc-arc -framework CoreServices".}
+  {.compile: "watcher_macos.c".}
+elif defined linux:
+  {.passL: "-lrt".}
+  {.compile: "watcher_linux.c".}
+elif defined windows:
+  {.passL: "-lws2_32 -liphlpapi".}
+  {.compile: "watcher_windows.c".}
+else:
+  error("Unsupported OS")
 
 type
-  File* = object
-    path: string
-    lastModified: Time
-
+  WatchoutCallbackC = proc(path: cstring, watcher: pointer) {.cdecl.}
   WatchoutCallback* = proc(file: File) {.closure.}
 
+  File* = object
+    path: string
+      ## The absolute path of the file
+    lastModified: Time
+      ## The last modified time of the file
+
   Watchout* = ref object
-    srcPath: seq[string]
-    pattern: string
-    files {.guard: L.}: TableRef[string, File] = newTable[string, File]()
-    onChange, onFound, onDelete*: WatchoutCallback
-    L: Lock
+    ## A Watchout instance monitors filesystem changes
+    pattern*: Option[string]
+      ## Optionally, a glob pattern to filter files
+      ## (e.g. "*.html", "*.nim", etc)
+      ## 
+      ## If not set, all files are monitored.
+    srcDirs*: seq[string]
+      ## Directories to monitor
+    files: TableRef[string, File] = newTable[string, File]()
+      # A table to keep track of monitored files
+    ignoreHidden*: bool = true
+      ## Whether to ignore hidden files (default: true)
+    onChange*, onFound*, onDelete*: WatchoutCallback
+      # Callback procs for file events
 
-proc newWatchout*(sourceDir, pattern: string): Watchout =
-  ## Initialize a new Watchout instance.
+#
+# Nim FFI to C watcher implementations
+#
+proc watchFileSystem(dirs: ptr cstring, dirCount: cint, cb: WatchoutCallbackC,
+                  watcher: pointer) {.cdecl, importc: "watch_paths".}
+
+#
+# Initialize a new Watchout instance.
+#
+proc newWatchout*(sourceDir: string, pattern: Option[string] = none(string)): Watchout =
+  ## Initialize a new Watchout instance watching a single directory.
   result = Watchout()
-  result.srcPath = @[sourceDir]
+  result.srcDirs = @[sourceDir]
   result.pattern = pattern
 
-proc newWatchout*(dirs: seq[string], pattern: string): Watchout =
+proc newWatchout*(dirs: seq[string], pattern: Option[string] = none(string)): Watchout =
   ## Initialize a new Watchout instance.
   result = Watchout()
-  result.srcPath = dirs
+  result.srcDirs = dirs
   result.pattern = pattern
-
-proc indexFile(watch: Watchout, p: string)  =
-  let path = absolutePath(p)
-  withLock watch.L:
-    {.gcsafe.}:
-      let fileInfo = path.getFileInfo()
-      if not watch.files.hasKey(path):
-        let watchoutFile = File(
-          path: path,
-          lastModified: fileInfo.lastWriteTime
-        )
-        watch.files[path] = watchoutFile
-        if watch.onFound != nil:
-          watch.onFound(watchoutFile)  # call the onFound callback, if it exists
-        else:
-          watch.onChange(watchoutFile)   # otherwise, run the default callback
-      else:
-        if fileInfo.lastWriteTime > watch.files[path].lastModified:
-          # file has been modified. run the onChange callback
-          watch.onChange(watch.files[path])
-          watch.files[path].lastModified = fileInfo.lastWriteTime
-
-proc indexHandler(watch: Watchout) {.thread.} =
-  while true:
-    for dir in watch.srcPath:
-      # iterate over the files in the `srcPath` directories
-      for path in walkPattern(dir):
-        let fileInfo = path.getFileInfo()
-        case fileInfo.kind
-        of pcFile:
-          watch.indexFile(path)
-        of pcDir:
-          for f in walkDirRec(path, yieldFilter = {pcFile}):
-            if f.isHidden: continue
-            watch.indexFile(f)
-        else: discard
-    sleep(200) # todo expose the delay as a parameter
-
-proc onChangeCallback*(watch: Watchout, callback: WatchoutCallback) =
-  ## Set the onChange callback.
-  watch.onChange = callback
-
-proc onFoundCallback*(watch: Watchout, callback: WatchoutCallback) =
-  ## Set the onFound callback.
-  watch.onFound = callback
-
-proc onDeleteCallback*(watch: Watchout, callback: WatchoutCallback) =
-  ## Set the onDelete callback.
-  watch.onDelete = callback
 
 proc getPath*(file: File): string =
   ## Get the path of the file.
@@ -90,11 +73,30 @@ proc getName*(file: File): string =
   ## Get the name of the file.
   result = file.path.extractFilename()
 
-proc start*(w: Watchout) =
-  ## Start the Watchout instance.
-  var watchoutThreads = newSeq[Thread[Watchout]](3)
+proc start*(watch: Watchout) =
+  ## Start monitoring the filesystem for changes.
+  proc onWatch(path: cstring, watcher: pointer) {.cdecl.} =
+    let watch = cast[Watchout](watcher)
+    let p = $path
+    if watch.files.hasKey(p):
+      if fileExists(p):
+        let lastMod = getFileInfo(p).lastWriteTime
+        if watch.files[p].lastModified < lastMod:
+          watch.files[p].lastModified = getFileInfo(p).lastWriteTime
+          if watch.onChange != nil:
+            watch.onChange(watch.files[p])
+      else:
+        if watch.onDelete != nil:
+          watch.onDelete(watch.files[p])
+        watch.files.del(p)
+    else:
+      watch.files[p] = File(path: p, lastModified: getFileInfo(p).lastWriteTime)
+      if watch.onFound != nil:
+        watch.onFound(watch.files[p])
+
+  # Prepare array of cstrings for C ABI
+  if watch.srcDirs.len == 0: return
+  var cpaths = newSeq[cstring](watch.srcDirs.len)
+  for i, d in watch.srcDirs: cpaths[i] = cstring(d)
+  watchFileSystem(unsafeAddr cpaths[0], cint(cpaths.len), onWatch, cast[pointer](watch))
   
-  # create a thread for the index handler
-  # in this thread we will watch the new files
-  createThread(watchoutThreads[0], indexHandler, w)
-  sleep(10)
