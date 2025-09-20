@@ -93,29 +93,8 @@ static DWORD WINAPI watch_thread_proc(LPVOID param) {
     return 0;
 }
 
-// Backward compatibility single-dir entry
-void watch_path(char *dir, FileChangedCallback callback, void *watcher) {
-    WatchThreadArg *arg = (WatchThreadArg*)malloc(sizeof(WatchThreadArg));
-    if (!arg) return;
-    lstrcpynA(arg->dir, dir, sizeof(arg->dir));
-    arg->cb = callback;
-    arg->watcher = watcher;
-    HANDLE thread = CreateThread(NULL, 0, watch_thread_proc, arg, 0, NULL);
-    if (thread) {
-        CloseHandle(thread);
-        Sleep(INFINITE); // keep process alive; thread runs watcher loop
-    } else {
-        free(arg);
-    }
-}
-
-// New multi-dir entry
 void watch_paths(char **dirs, int dirCount, FileChangedCallback callback, void *watcher) {
     if (dirCount <= 0) return;
-    HANDLE *threads = (HANDLE*)malloc(sizeof(HANDLE) * (size_t)dirCount);
-    if (!threads) return;
-
-    int started = 0;
     for (int i = 0; i < dirCount; ++i) {
         WatchThreadArg *arg = (WatchThreadArg*)malloc(sizeof(WatchThreadArg));
         if (!arg) continue;
@@ -124,17 +103,9 @@ void watch_paths(char **dirs, int dirCount, FileChangedCallback callback, void *
         arg->watcher = watcher;
         HANDLE t = CreateThread(NULL, 0, watch_thread_proc, arg, 0, NULL);
         if (t) {
-            threads[started++] = t;
-            // We don't CloseHandle here because we may wait on them
+            CloseHandle(t); // Detach thread, don't block main thread
         } else {
             free(arg);
         }
     }
-    if (started == 0) { free(threads); return; }
-
-    // Block forever while watchers run
-    WaitForMultipleObjects((DWORD)started, threads, TRUE, INFINITE);
-
-    for (int i = 0; i < started; ++i) CloseHandle(threads[i]);
-    free(threads);
 }

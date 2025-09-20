@@ -8,10 +8,18 @@
 #include <CoreFoundation/CoreFoundation.h>
 #include <string.h>
 #include <limits.h>
+#include <pthread.h>
 
 typedef void (*FileChangedCallback)(char *path, void *watcher);
 
 static FileChangedCallback gCallback = NULL;
+
+typedef struct {
+    char **dirs;
+    int dirCount;
+    FileChangedCallback callback;
+    void *watcher;
+} WatcherPathsThreadArgs;
 
 void callbackFunc(
     ConstFSEventStreamRef streamRef,
@@ -51,59 +59,69 @@ void callbackFunc(
     }
 }
 
-void watch_path(char *dir, FileChangedCallback callback, void *watcher) {
-  gCallback = callback;
-  CFStringRef path = CFStringCreateWithCString(NULL, dir, kCFStringEncodingUTF8);
-  CFArrayRef pathsToWatch = CFArrayCreate(NULL, (const void **)&path, 1, NULL);
+void *watcher_paths_thread_func(void *arg) {
+    WatcherPathsThreadArgs *args = (WatcherPathsThreadArgs *)arg;
+    gCallback = args->callback;
 
-  FSEventStreamContext context = (FSEventStreamContext){0, watcher, NULL, NULL, NULL};
-  FSEventStreamRef stream = FSEventStreamCreate(
-      NULL,
-      &callbackFunc,
-      &context,
-      pathsToWatch,
-      kFSEventStreamEventIdSinceNow,
-      0.5, // latency (coalescing window)
-      kFSEventStreamCreateFlagFileEvents |
-      kFSEventStreamCreateFlagIgnoreSelf // avoid self-generated events
-  );
+    if (args->dirCount <= 0) {
+        free(args->dirs);
+        free(args);
+        return NULL;
+    }
 
-  FSEventStreamScheduleWithRunLoop(stream, CFRunLoopGetCurrent(), kCFRunLoopDefaultMode);
-  FSEventStreamStart(stream);
-  CFRunLoopRun();
+    CFMutableArrayRef pathsToWatch = CFArrayCreateMutable(NULL, args->dirCount, &kCFTypeArrayCallBacks);
+    if (!pathsToWatch) {
+        free(args->dirs);
+        free(args);
+        return NULL;
+    }
+
+    for (int i = 0; i < args->dirCount; ++i) {
+        CFStringRef path = CFStringCreateWithCString(NULL, args->dirs[i], kCFStringEncodingUTF8);
+        if (path) {
+            CFArrayAppendValue(pathsToWatch, path);
+            CFRelease(path);
+        }
+    }
+
+    FSEventStreamContext context = (FSEventStreamContext){0, args->watcher, NULL, NULL, NULL};
+    FSEventStreamRef stream = FSEventStreamCreate(
+        NULL,
+        &callbackFunc,
+        &context,
+        pathsToWatch,
+        kFSEventStreamEventIdSinceNow,
+        0.5,
+        kFSEventStreamCreateFlagFileEvents |
+        kFSEventStreamCreateFlagIgnoreSelf
+    );
+
+    FSEventStreamScheduleWithRunLoop(stream, CFRunLoopGetCurrent(), kCFRunLoopDefaultMode);
+    FSEventStreamStart(stream);
+    CFRunLoopRun();
+
+    CFRelease(pathsToWatch);
+    FSEventStreamInvalidate(stream);
+    FSEventStreamRelease(stream);
+
+    for (int i = 0; i < args->dirCount; ++i) {
+        free(args->dirs[i]);
+    }
+    free(args->dirs);
+    free(args);
+    return NULL;
 }
 
 void watch_paths(char **dirs, int dirCount, FileChangedCallback callback, void *watcher) {
-  gCallback = callback;
-
-  if (dirCount <= 0) return;
-
-  CFMutableArrayRef pathsToWatch = CFArrayCreateMutable(NULL, dirCount, &kCFTypeArrayCallBacks);
-  if (!pathsToWatch) return;
-
-  for (int i = 0; i < dirCount; ++i) {
-    CFStringRef path = CFStringCreateWithCString(NULL, dirs[i], kCFStringEncodingUTF8);
-    if (path) {
-      CFArrayAppendValue(pathsToWatch, path);
-      CFRelease(path);
+    pthread_t tid;
+    WatcherPathsThreadArgs *args = malloc(sizeof(WatcherPathsThreadArgs));
+    args->dirCount = dirCount;
+    args->callback = callback;
+    args->watcher = watcher;
+    args->dirs = malloc(sizeof(char *) * dirCount);
+    for (int i = 0; i < dirCount; ++i) {
+        args->dirs[i] = strdup(dirs[i]);
     }
-  }
-
-  FSEventStreamContext context = (FSEventStreamContext){0, watcher, NULL, NULL, NULL};
-  FSEventStreamRef stream = FSEventStreamCreate(
-      NULL,
-      &callbackFunc,
-      &context,
-      pathsToWatch,
-      kFSEventStreamEventIdSinceNow,
-      0.5,
-      kFSEventStreamCreateFlagFileEvents |
-      kFSEventStreamCreateFlagIgnoreSelf
-  );
-
-  CFRelease(pathsToWatch);
-
-  FSEventStreamScheduleWithRunLoop(stream, CFRunLoopGetCurrent(), kCFRunLoopDefaultMode);
-  FSEventStreamStart(stream);
-  CFRunLoopRun();
+    pthread_create(&tid, NULL, watcher_paths_thread_func, args);
+    pthread_detach(tid);
 }

@@ -11,51 +11,9 @@
 #include <string.h>
 #include <errno.h>
 #include <stdio.h>
+#include <pthread.h>
 
 typedef void (*FileChangedCallback)(char *path, void *watcher);
-
-// Backward compatibility single-dir entry
-static void watch_single(char *dir, FileChangedCallback callback, void *watcher) {
-    int fd = inotify_init1(0); // blocking
-    if (fd < 0) { perror("inotify_init1"); return; }
-
-    int wd = inotify_add_watch(fd, dir,
-        IN_CREATE | IN_MODIFY | IN_DELETE | IN_MOVED_FROM | IN_MOVED_TO | IN_ATTRIB);
-    if (wd < 0) { perror("inotify_add_watch"); close(fd); return; }
-
-    const size_t buf_len = 1024 * (sizeof(struct inotify_event) + NAME_MAX + 1);
-    char *buf = (char*)malloc(buf_len);
-    if (!buf) { close(fd); return; }
-
-    for (;;) {
-        ssize_t len = read(fd, buf, buf_len);
-        if (len <= 0) {
-            if (len < 0) perror("read");
-            break;
-        }
-        size_t i = 0;
-        while (i < (size_t)len) {
-            struct inotify_event *ev = (struct inotify_event *)(buf + i);
-            if (ev->len > 0) {
-                char path[PATH_MAX];
-                size_t dlen = strlen(dir);
-                if (dlen + 1 + strlen(ev->name) + 1 < sizeof(path)) {
-                    strcpy(path, dir);
-                    if (dlen > 0 && dir[dlen-1] != '/') strcat(path, "/");
-                    strcat(path, ev->name);
-                    if (callback) callback(path, watcher);
-                }
-            }
-            i += sizeof(struct inotify_event) + ev->len;
-        }
-    }
-    free(buf);
-    close(fd);
-}
-
-void watch_path(char *dir, FileChangedCallback callback, void *watcher) {
-    watch_single(dir, callback, watcher);
-}
 
 void watch_paths(char **dirs, int dirCount, FileChangedCallback callback, void *watcher) {
     if (dirCount <= 0) return;
@@ -114,4 +72,22 @@ void watch_paths(char **dirs, int dirCount, FileChangedCallback callback, void *
     free(buf);
     free(maps);
     close(fd);
+}
+
+typedef struct {
+    char **dirs;
+    int dirCount;
+    FileChangedCallback callback;
+    void *watcher;
+} WatcherPathsThreadArgs;
+
+static void *watcher_paths_thread_func(void *arg) {
+    WatcherPathsThreadArgs *args = (WatcherPathsThreadArgs *)arg;
+    watch_paths(args->dirs, args->dirCount, args->callback, args->watcher);
+    for (int i = 0; i < args->dirCount; ++i) {
+        free(args->dirs[i]);
+    }
+    free(args->dirs);
+    free(args);
+    return NULL;
 }

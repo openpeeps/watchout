@@ -75,6 +75,7 @@ proc getName*(file: File): string =
 
 proc start*(watch: Watchout) =
   ## Start monitoring the filesystem for changes.
+  ## The C implementation handles threading.
   proc onWatch(path: cstring, watcher: pointer) {.cdecl.} =
     let watch = cast[Watchout](watcher)
     let p = $path
@@ -90,13 +91,31 @@ proc start*(watch: Watchout) =
           watch.onDelete(watch.files[p])
         watch.files.del(p)
     else:
+      # new file found by watcher does not mean
+      # is a new file on disk
       watch.files[p] = File(path: p, lastModified: getFileInfo(p).lastWriteTime)
-      if watch.onFound != nil:
-        watch.onFound(watch.files[p])
+      if watch.onChange != nil:
+        watch.onChange(watch.files[p])
 
   # Prepare array of cstrings for C ABI
   if watch.srcDirs.len == 0: return
   var cpaths = newSeq[cstring](watch.srcDirs.len)
   for i, d in watch.srcDirs: cpaths[i] = cstring(d)
   watchFileSystem(unsafeAddr cpaths[0], cint(cpaths.len), onWatch, cast[pointer](watch))
+
+when isMainModule:
+  var w = newWatchout(@[getCurrentDir(), getCurrentDir().parentDir])
   
+  w.onFound = proc(file: File) =
+    echo "Found: ", file.path
+
+  w.onChange = proc(file: File) =
+    echo "Changed: ", file.path
+
+  w.onDelete = proc(file: File) =
+    echo "Deleted: ", file.path
+
+  w.start()
+
+  while true:
+    sleep(1000)
