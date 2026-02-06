@@ -15,31 +15,43 @@
 
 typedef void (*FileChangedCallback)(char *path, void *watcher);
 
-void watch_paths(char **dirs, int dirCount, FileChangedCallback callback, void *watcher) {
-    if (dirCount <= 0) return;
+typedef struct {
+    char **dirs;
+    int dirCount;
+    FileChangedCallback callback;
+    void *watcher;
+} WatcherPathsThreadArgs;
+
+void *watcher_paths_thread_func(void *arg) {
+    WatcherPathsThreadArgs *args = (WatcherPathsThreadArgs *)arg;
+    if (args->dirCount <= 0) {
+        free(args->dirs);
+        free(args);
+        return NULL;
+    }
 
     int fd = inotify_init1(0); // blocking
-    if (fd < 0) { perror("inotify_init1"); return; }
+    if (fd < 0) { perror("inotify_init1"); free(args->dirs); free(args); return NULL; }
 
     typedef struct { int wd; char base[PATH_MAX]; } WdMap;
-    WdMap *maps = (WdMap*)calloc((size_t)dirCount, sizeof(WdMap));
-    if (!maps) { close(fd); return; }
+    WdMap *maps = (WdMap*)calloc((size_t)args->dirCount, sizeof(WdMap));
+    if (!maps) { close(fd); free(args->dirs); free(args); return NULL; }
 
     int added = 0;
-    for (int i = 0; i < dirCount; ++i) {
-        int wd = inotify_add_watch(fd, dirs[i],
+    for (int i = 0; i < args->dirCount; ++i) {
+        int wd = inotify_add_watch(fd, args->dirs[i],
             IN_CREATE | IN_MODIFY | IN_DELETE | IN_MOVED_FROM | IN_MOVED_TO | IN_ATTRIB);
         if (wd < 0) { perror("inotify_add_watch"); continue; }
         maps[added].wd = wd;
-        strncpy(maps[added].base, dirs[i], sizeof(maps[added].base) - 1);
+        strncpy(maps[added].base, args->dirs[i], sizeof(maps[added].base) - 1);
         maps[added].base[sizeof(maps[added].base) - 1] = '\0';
         added++;
     }
-    if (added == 0) { free(maps); close(fd); return; }
+    if (added == 0) { free(maps); close(fd); free(args->dirs); free(args); return NULL; }
 
     const size_t buf_len = 1024 * (sizeof(struct inotify_event) + NAME_MAX + 1);
     char *buf = (char*)malloc(buf_len);
-    if (!buf) { free(maps); close(fd); return; }
+    if (!buf) { free(maps); close(fd); free(args->dirs); free(args); return NULL; }
 
     for (;;) {
         ssize_t len = read(fd, buf, buf_len);
@@ -62,7 +74,7 @@ void watch_paths(char **dirs, int dirCount, FileChangedCallback callback, void *
                         strcpy(path, base);
                         if (dlen > 0 && base[dlen-1] != '/') strcat(path, "/");
                         strcat(path, ev->name);
-                        if (callback) callback(path, watcher);
+                        if (args->callback) args->callback(path, args->watcher);
                     }
                 }
             }
@@ -71,23 +83,26 @@ void watch_paths(char **dirs, int dirCount, FileChangedCallback callback, void *
     }
     free(buf);
     free(maps);
-    close(fd);
-}
 
-typedef struct {
-    char **dirs;
-    int dirCount;
-    FileChangedCallback callback;
-    void *watcher;
-} WatcherPathsThreadArgs;
-
-static void *watcher_paths_thread_func(void *arg) {
-    WatcherPathsThreadArgs *args = (WatcherPathsThreadArgs *)arg;
-    watch_paths(args->dirs, args->dirCount, args->callback, args->watcher);
     for (int i = 0; i < args->dirCount; ++i) {
         free(args->dirs[i]);
     }
     free(args->dirs);
     free(args);
+    close(fd);
     return NULL;
+}
+
+void watch_paths(char **dirs, int dirCount, FileChangedCallback callback, void *watcher) {
+    pthread_t tid;
+    WatcherPathsThreadArgs *args = malloc(sizeof(WatcherPathsThreadArgs));
+    args->dirCount = dirCount;
+    args->callback = callback;
+    args->watcher = watcher;
+    args->dirs = malloc(sizeof(char *) * dirCount);
+    for (int i = 0; i < dirCount; ++i) {
+        args->dirs[i] = strdup(dirs[i]);
+    }
+    pthread_create(&tid, NULL, watcher_paths_thread_func, args);
+    pthread_detach(tid);
 }
