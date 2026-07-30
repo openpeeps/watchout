@@ -73,31 +73,32 @@ proc getName*(file: File): string =
   ## Get the name of the file.
   result = file.path.extractFilename()
 
+proc handleEvent*(watch: Watchout, path: string) =
+  ## Process a filesystem event for the given path.
+  ## Handles file creation, modification, and deletion tracking.
+  if watch.files.hasKey(path):
+    if fileExists(path):
+      let lastMod = getFileInfo(path).lastWriteTime
+      if watch.files[path].lastModified < lastMod:
+        watch.files[path].lastModified = lastMod
+        if watch.onChange != nil:
+          watch.onChange(watch.files[path])
+    else:
+      if watch.onDelete != nil:
+        watch.onDelete(watch.files[path])
+      watch.files.del(path)
+  elif fileExists(path):
+    watch.files[path] = File(path: path, lastModified: getFileInfo(path).lastWriteTime)
+    if watch.onChange != nil:
+      watch.onChange(watch.files[path])
+
 proc start*(watch: Watchout) =
   ## Start monitoring the filesystem for changes.
   ## The C implementation handles threading.
   proc onWatch(path: cstring, watcher: pointer) {.cdecl.} =
     let watch = cast[Watchout](watcher)
-    let p = $path
-    if watch.files.hasKey(p):
-      if fileExists(p):
-        let lastMod = getFileInfo(p).lastWriteTime
-        if watch.files[p].lastModified < lastMod:
-          watch.files[p].lastModified = getFileInfo(p).lastWriteTime
-          if watch.onChange != nil:
-            watch.onChange(watch.files[p])
-      else:
-        if watch.onDelete != nil:
-          watch.onDelete(watch.files[p])
-        watch.files.del(p)
-    else:
-      # new file found by watcher does not mean
-      # is a new file on disk
-      watch.files[p] = File(path: p, lastModified: getFileInfo(p).lastWriteTime)
-      if watch.onChange != nil:
-        watch.onChange(watch.files[p])
+    handleEvent(watch, $path)
 
-  # Prepare array of cstrings for C ABI
   if watch.srcDirs.len == 0: return
   var cpaths = newSeq[cstring](watch.srcDirs.len)
   for i, d in watch.srcDirs: cpaths[i] = cstring(d)
