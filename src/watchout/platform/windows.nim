@@ -1,104 +1,204 @@
-# watchout - Windows ReadDirectoryChangesW backend
+# A stupid simple filesystem monitor.
 #
-# Uses inline C via emit for the threaded watcher loop.
+# (c) George Lemon | MIT License
+#     Made by humans from OpenPeeps
+#     https://gitnub.com/openpeeps/watchout
 
-type FileChangedCallback* = proc(path: cstring, watcher: pointer) {.cdecl.}
+## watchout/platform/windows.nim — ReadDirectoryChangesW backend for Windows.
+##
+## All types, constants and handles are pure Nim bindings following
+## powpow/platform/iocp.nim conventions (stdcall + dynlib).
+## Each watched directory gets its own thread with a blocking
+## ReadDirectoryChangesW loop.
 
-{.emit: """
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#include <wchar.h>
-#include <stdlib.h>
-#include <string.h>
+# ── Types ─────────────────────────────────────────────────────────────────────
 
-typedef void (*WatchCallback)(const char *path, void *watcher);
+type
+  Handle = pointer
+  DWORD  = uint32
+  BOOL   = int32
+  WCHAR  = uint16
 
-static WatchCallback gCallback = NULL;
+  FileChangedCallback* = proc(path: cstring, watcher: pointer) {.cdecl.}
 
-static int utf8_to_wide(const char *src, wchar_t *dst, int dstLen) {
-    return MultiByteToWideChar(CP_UTF8, 0, src, -1, dst, dstLen);
-}
-static int wide_to_utf8(const wchar_t *src, char *dst, int dstLen) {
-    return WideCharToMultiByte(CP_UTF8, 0, src, -1, dst, dstLen, NULL, NULL);
-}
+  FILE_NOTIFY_INFORMATION {.importc: "FILE_NOTIFY_INFORMATION",
+                            header: "<windows.h>",
+                            pure, final.} = object
+    NextEntryOffset: DWORD
+    Action:           DWORD
+    FileNameLength:   DWORD
+    FileName:         UncheckedArray[WCHAR]
 
-typedef struct {
-    char dir[MAX_PATH * 3];
-    void *watcher;
-} WatchThreadArg;
+# ── Constants ─────────────────────────────────────────────────────────────────
 
-static DWORD WINAPI watch_thread_proc(LPVOID param) {
-    WatchThreadArg *arg = (WatchThreadArg *)param;
+const
+  FILE_LIST_DIRECTORY         = 0x0001
+  FILE_SHARE_READ             = 0x00000001
+  FILE_SHARE_WRITE            = 0x00000002
+  FILE_SHARE_DELETE           = 0x00000004
+  OPEN_EXISTING               = 3
+  FILE_FLAG_BACKUP_SEMANTICS  = 0x02000000
 
-    wchar_t wdir[MAX_PATH];
-    if (!utf8_to_wide(arg->dir, wdir, MAX_PATH)) { free(arg); return 0; }
+  FILE_NOTIFY_CHANGE_FILE_NAME   = 0x00000001
+  FILE_NOTIFY_CHANGE_DIR_NAME    = 0x00000002
+  FILE_NOTIFY_CHANGE_ATTRIBUTES  = 0x00000004
+  FILE_NOTIFY_CHANGE_SIZE        = 0x00000008
+  FILE_NOTIFY_CHANGE_LAST_WRITE  = 0x00000010
+  FILE_NOTIFY_CHANGE_CREATION    = 0x00000040
 
-    HANDLE hDir = CreateFileW(
-        wdir, FILE_LIST_DIRECTORY,
-        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-        NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
-    if (hDir == INVALID_HANDLE_VALUE) { free(arg); return 0; }
+  MAX_PATH        = 260
+  CP_UTF8         = 65001
+  INVALID_HANDLE  = cast[Handle](-1)
 
-    BYTE buffer[64 * 1024];
-    DWORD bytesReturned;
+# ── Win32 procs ──────────────────────────────────────────────────────────────
 
-    for (;;) {
-        if (!ReadDirectoryChangesW(hDir, buffer, sizeof(buffer), TRUE,
-            FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME |
-            FILE_NOTIFY_CHANGE_ATTRIBUTES | FILE_NOTIFY_CHANGE_SIZE |
-            FILE_NOTIFY_CHANGE_LAST_WRITE | FILE_NOTIFY_CHANGE_CREATION,
-            &bytesReturned, NULL, NULL)) break;
+proc createFileW(
+    lpFileName: pointer,
+    dwDesiredAccess: DWORD,
+    dwShareMode: DWORD,
+    lpSecurityAttributes: pointer,
+    dwCreationDisposition: DWORD,
+    dwFlagsAndAttributes: DWORD,
+    hTemplateFile: Handle
+): Handle {.
+  importc: "CreateFileW",
+  stdcall,
+  dynlib: "kernel32".}
 
-        BYTE *ptr = buffer;
-        for (;;) {
-            FILE_NOTIFY_INFORMATION *fni = (FILE_NOTIFY_INFORMATION *)ptr;
-            int wlen = (int)(fni->FileNameLength / sizeof(WCHAR));
-            wchar_t wpath[MAX_PATH];
-            wcsncpy(wpath, wdir, MAX_PATH - 1);
-            wpath[MAX_PATH - 1] = L'\\0';
-            size_t dlen = wcslen(wpath);
-            if (dlen > 0 && wpath[dlen - 1] != L'\\') {
-                if (dlen + 1 < MAX_PATH) { wpath[dlen++] = L'\\'; wpath[dlen] = L'\\0'; }
-            }
-            if ((int)dlen + wlen < MAX_PATH) {
-                wmemcpy(wpath + dlen, fni->FileName, wlen);
-                wpath[dlen + wlen] = L'\\0';
-                char pathUtf8[MAX_PATH * 3];
-                if (wide_to_utf8(wpath, pathUtf8, (int)sizeof(pathUtf8)) && gCallback) {
-                    gCallback(pathUtf8, arg->watcher);
-                }
-            }
-            if (fni->NextEntryOffset == 0) break;
-            ptr += fni->NextEntryOffset;
-        }
-    }
+proc readDirectoryChangesW(
+    hDirectory: Handle,
+    lpBuffer: pointer,
+    nBufferLength: DWORD,
+    bWatchSubtree: BOOL,
+    dwNotifyFilter: DWORD,
+    lpBytesReturned: ptr DWORD,
+    lpOverlapped: pointer,
+    lpCompletionRoutine: pointer
+): BOOL {.
+  importc: "ReadDirectoryChangesW",
+  stdcall,
+  dynlib: "kernel32".}
 
-    CloseHandle(hDir);
-    free(arg);
-    return 0;
-}
+proc closeHandle(hObject: Handle): BOOL {.
+  importc: "CloseHandle",
+  stdcall,
+  dynlib: "kernel32".}
 
-void watch_paths(char **dirs, int dirCount, void *cb, void *watcher) {
-    gCallback = (WatchCallback)cb;
-    if (dirCount <= 0) return;
-    for (int i = 0; i < dirCount; ++i) {
-        WatchThreadArg *arg = (WatchThreadArg *)malloc(sizeof(WatchThreadArg));
-        if (!arg) continue;
-        lstrcpynA(arg->dir, dirs[i], sizeof(arg->dir));
-        arg->watcher = watcher;
-        HANDLE t = CreateThread(NULL, 0, watch_thread_proc, arg, 0, NULL);
-        if (t) CloseHandle(t);
-        else free(arg);
-    }
-}
-""".}
+proc multiByteToWideChar(
+    codePage: DWORD,
+    dwFlags: DWORD,
+    lpMultiByteStr: cstring,
+    cbMultiByte: cint,
+    lpWideCharStr: pointer,
+    cchWideChar: cint
+): cint {.
+  importc: "MultiByteToWideChar",
+  stdcall,
+  dynlib: "kernel32".}
 
-proc watchPaths(dirs: ptr cstring, dirCount: cint, cb: pointer,
-                watcher: pointer) {.cdecl, importc: "watch_paths".}
+proc wideCharToMultiByte(
+    codePage: DWORD,
+    dwFlags: DWORD,
+    lpWideCharStr: pointer,
+    cchWideChar: cint,
+    lpMultiByteStr: pointer,
+    cbMultiByte: cint,
+    lpDefaultChar: pointer,
+    lpUsedDefaultChar: pointer
+): cint {.
+  importc: "WideCharToMultiByte",
+  stdcall,
+  dynlib: "kernel32".}
+
+# ── Thread argument ──────────────────────────────────────────────────────────
+
+type
+  WatchThreadArg = object
+    dir:     string
+    cb:      pointer
+    watcher: pointer
+
+proc watcherThread(arg: WatchThreadArg) {.thread.} =
+  let callback = cast[FileChangedCallback](arg.cb)
+
+  # Convert UTF-8 dir to wide string
+  var wdir: array[MAX_PATH, WCHAR]
+  let wdirLen = multiByteToWideChar(CP_UTF8, 0, cstring(arg.dir), -1,
+      addr wdir[0], MAX_PATH)
+  if wdirLen == 0: return
+
+  let hDir = createFileW(
+    addr wdir[0],
+    FILE_LIST_DIRECTORY,
+    FILE_SHARE_READ or FILE_SHARE_WRITE or FILE_SHARE_DELETE,
+    nil,
+    OPEN_EXISTING,
+    FILE_FLAG_BACKUP_SEMANTICS,
+    nil
+  )
+  if hDir == nil or hDir == INVALID_HANDLE: return
+
+  var buffer: array[64 * 1024, byte]
+  var bytesReturned: DWORD
+
+  while true:
+    let ok = readDirectoryChangesW(
+      hDir,
+      addr buffer[0],
+      buffer.len.DWORD,
+      1, # TRUE — watch subtree
+      FILE_NOTIFY_CHANGE_FILE_NAME or
+      FILE_NOTIFY_CHANGE_DIR_NAME or
+      FILE_NOTIFY_CHANGE_ATTRIBUTES or
+      FILE_NOTIFY_CHANGE_SIZE or
+      FILE_NOTIFY_CHANGE_LAST_WRITE or
+      FILE_NOTIFY_CHANGE_CREATION,
+      addr bytesReturned,
+      nil,
+      nil
+    )
+    if ok == 0: break
+
+    var offset = 0
+    while true:
+      let fni = cast[ptr FILE_NOTIFY_INFORMATION](addr buffer[offset])
+      let wlen = int(fni.FileNameLength div sizeof(WCHAR))
+
+      # Build wide path = dir + separator + filename
+      var wpath: array[MAX_PATH, WCHAR]
+      var dlen = 0
+      while dlen < wdirLen - 1 and dlen < MAX_PATH - 1:
+        wpath[dlen] = wdir[dlen]
+        inc dlen
+      if dlen > 0 and wpath[dlen - 1] != WCHAR('\\'):
+        if dlen < MAX_PATH - 1:
+          wpath[dlen] = WCHAR('\\')
+          inc dlen
+
+      var i = 0
+      while i < wlen and dlen < MAX_PATH - 1:
+        wpath[dlen] = fni.FileName[i]
+        inc dlen
+        inc i
+      wpath[dlen] = WCHAR(0)
+
+      # Convert back to UTF-8
+      var pathUtf8: array[MAX_PATH * 3, byte]
+      let utf8Len = wideCharToMultiByte(CP_UTF8, 0, addr wpath[0], -1,
+          addr pathUtf8[0], MAX_PATH * 3, nil, nil)
+      if utf8Len > 0 and callback != nil:
+        callback(cstring(addr pathUtf8[0]), arg.watcher)
+
+      if fni.NextEntryOffset == 0: break
+      offset += int(fni.NextEntryOffset)
+
+  discard closeHandle(hDir)
+
+# ── Public entry point ──────────────────────────────────────────────────────
 
 proc watch*(dirs: seq[string], cb: FileChangedCallback, watcher: pointer) =
   if dirs.len == 0: return
-  var cpaths = newSeq[cstring](dirs.len)
-  for i, d in dirs:
-    cpaths[i] = cstring(d)
-  watchPaths(addr cpaths[0], cint(dirs.len), cast[pointer](cb), watcher)
+  for d in dirs:
+    var arg = WatchThreadArg(dir: d, cb: cast[pointer](cb), watcher: watcher)
+    var thread: Thread[WatchThreadArg]
+    createThread(thread, watcherThread, arg)

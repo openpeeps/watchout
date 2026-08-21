@@ -6,15 +6,6 @@
 
 import std/[os, strutils, options, tables, times]
 
-when defined(macosx) or defined(bsd):
-  {.passL: "-fobjc-arc -framework CoreServices -framework CoreFoundation".}
-elif defined(linux):
-  {.passL: "-lrt".}
-elif defined(windows):
-  {.passL: "-lws2_32 -liphlpapi".}
-else:
-  error("Unsupported OS")
-
 type
   WatchoutCallbackC = proc(path: cstring, watcher: pointer) {.cdecl.}
   WatchoutCallback* = proc(file: File) {.closure.}

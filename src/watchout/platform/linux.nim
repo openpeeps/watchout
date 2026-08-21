@@ -1,119 +1,128 @@
-# watchout - Linux inotify backend
+# A stupid simple filesystem monitor.
 #
-# Uses inline C via emit for the threaded watcher loop.
+# (c) George Lemon | MIT License
+#     Made by humans from OpenPeeps
+#     https://gitnub.com/openpeeps/watchout
+
+## watchout/platform/linux.nim — inotify backend for Linux.
+##
+## All types, constants and handles are pure Nim bindings (importc +
+## header pragmas, following powpow/fswatch.nim conventions).
+## The watcher thread runs a blocking read() loop in Nim — no C emit
+## required because inotify uses simple POSIX I/O (no CFRunLoop).
+
+import std/posix
+
+# ── Linker flags ─────────────────────────────────────────────────────────────
 
 {.passL: "-lrt".}
 
-type FileChangedCallback* = proc(path: cstring, watcher: pointer) {.cdecl.}
+# ── Types ─────────────────────────────────────────────────────────────────────
 
-{.emit: """
-#include <sys/inotify.h>
-#include <unistd.h>
-#include <limits.h>
-#include <stdlib.h>
-#include <string.h>
-#include <pthread.h>
+type
+  InotifyEvent {.importc: "struct inotify_event",
+                 header: "<sys/inotify.h>",
+                 pure, final.} = object
+    wd:     int32
+    mask:   uint32
+    cookie: uint32
+    len:    uint32
 
-typedef void (*WatchCallback)(const char *path, void *watcher);
+  FileChangedCallback* = proc(path: cstring, watcher: pointer) {.cdecl.}
 
-static WatchCallback gCallback = NULL;
+# ── Constants ─────────────────────────────────────────────────────────────────
 
-typedef struct { int wd; char base[PATH_MAX]; } WdMap;
+const
+  IN_NONBLOCK*   = 0x800
+  IN_MODIFY*     = 0x00000002'u32
+  IN_CREATE*     = 0x00000100'u32
+  IN_DELETE*     = 0x00000200'u32
+  IN_MOVED_FROM* = 0x00000040'u32
+  IN_MOVED_TO*   = 0x00000080'u32
+  IN_ATTRIB*     = 0x00000004'u32
+  IN_DELETE_SELF*= 0x00000400'u32
+  IN_MOVE_SELF*  = 0x00000800'u32
+  IN_IGNORED*    = 0x00008000'u32
 
-static void *watcher_thread(void *arg) {
-    char **dirs = ((char ***)arg)[0];
-    int dirCount = ((int *)(((char ***)arg) + 1))[0];
-    void *watcher = ((char ***)arg)[1];
+  InWatchMask = IN_MODIFY or IN_CREATE or IN_DELETE or
+                IN_MOVED_FROM or IN_MOVED_TO or IN_ATTRIB
 
-    if (dirCount <= 0) {
-        free(arg);
-        return NULL;
-    }
+# ── Imported procs ───────────────────────────────────────────────────────────
 
-    int fd = inotify_init1(0);
-    if (fd < 0) { free(arg); return NULL; }
+proc inotifyInit1(flags: cint): cint {.
+  importc: "inotify_init1",
+  header: "<sys/inotify.h>".}
 
-    WdMap *maps = (WdMap *)calloc((size_t)dirCount, sizeof(WdMap));
-    if (!maps) { close(fd); free(arg); return NULL; }
+proc inotifyAddWatch(fd: cint; path: cstring; mask: uint32): cint {.
+  importc: "inotify_add_watch",
+  header: "<sys/inotify.h>".}
 
-    int added = 0;
-    for (int i = 0; i < dirCount; ++i) {
-        int wd = inotify_add_watch(fd, dirs[i],
-            IN_CREATE | IN_MODIFY | IN_DELETE | IN_MOVED_FROM | IN_MOVED_TO | IN_ATTRIB);
-        if (wd < 0) continue;
-        maps[added].wd = wd;
-        strncpy(maps[added].base, dirs[i], sizeof(maps[added].base) - 1);
-        maps[added].base[sizeof(maps[added].base) - 1] = '\\0';
-        added++;
-    }
-    if (added == 0) { free(maps); close(fd); free(arg); return NULL; }
+proc inotifyRmWatch(fd: cint; wd: cint): cint {.
+  importc: "inotify_rm_watch",
+  header: "<sys/inotify.h>".}
 
-    const size_t buf_len = 1024 * (sizeof(struct inotify_event) + NAME_MAX + 1);
-    char *buf = (char *)malloc(buf_len);
-    if (!buf) { free(maps); close(fd); free(arg); return NULL; }
+# ── Watcher thread argument (GC-free for safe cross-thread passing) ──────────
 
-    for (;;) {
-        ssize_t len = read(fd, buf, buf_len);
-        if (len <= 0) break;
-        size_t i = 0;
-        while (i < (size_t)len) {
-            struct inotify_event *ev = (struct inotify_event *)(buf + i);
-            if (ev->len > 0) {
-                const char *base = NULL;
-                for (int j = 0; j < added; ++j) {
-                    if (maps[j].wd == ev->wd) { base = maps[j].base; break; }
-                }
-                if (base) {
-                    char path[PATH_MAX];
-                    size_t dlen = strlen(base);
-                    if (dlen + 1 + strlen(ev->name) + 1 < sizeof(path)) {
-                        strcpy(path, base);
-                        if (dlen > 0 && base[dlen-1] != '/') strcat(path, "/");
-                        strcat(path, ev->name);
-                        if (gCallback) gCallback(path, watcher);
-                    }
-                }
-            }
-            i += sizeof(struct inotify_event) + ev->len;
-        }
-    }
-    free(buf);
-    free(maps);
-    free(arg);
-    close(fd);
-    return NULL;
-}
+type
+  WatchDir = object
+    wd:   int
+    base: string
 
-typedef struct {
-    char **dirs;
-    int dirCount;
-    void *watcher;
-} WatcherArgs;
+  WatchThreadArg = object
+    dirs:    seq[string]
+    cb:      pointer
+    watcher: pointer
 
-void watch_paths(char **dirs, int dirCount, void *cb, void *watcher) {
-    gCallback = (WatchCallback)cb;
-    if (dirCount <= 0) return;
+proc watcherThread(arg: WatchThreadArg) {.thread.} =
+  let callback = cast[FileChangedCallback](arg.cb)
 
-    WatcherArgs *args = (WatcherArgs *)malloc(sizeof(WatcherArgs));
-    args->dirCount = dirCount;
-    args->watcher = watcher;
-    args->dirs = (char **)malloc(sizeof(char *) * dirCount);
-    for (int i = 0; i < dirCount; ++i) {
-        args->dirs[i] = strdup(dirs[i]);
-    }
+  let fd = inotifyInit1(0) # blocking mode
+  if fd < 0: return
 
-    pthread_t tid;
-    pthread_create(&tid, NULL, watcher_thread, args);
-    pthread_detach(tid);
-}
-""".}
+  var maps: seq[WatchDir]
+  for d in arg.dirs:
+    let wd = inotifyAddWatch(fd, cstring(d), InWatchMask)
+    if wd >= 0:
+      maps.add(WatchDir(wd: wd.int, base: d))
 
-proc watchPaths(dirs: ptr cstring, dirCount: cint, cb: pointer,
-                watcher: pointer) {.cdecl, importc: "watch_paths".}
+  if maps.len == 0:
+    discard close(fd)
+    return
+
+  const bufLen = 1024 * (sizeof(InotifyEvent) + 256)
+  var buf: array[bufLen, byte]
+
+  while true:
+    let n = read(fd, cast[pointer](addr buf[0]), bufLen)
+    if n <= 0: break
+
+    var off = 0
+    while off < n:
+      let ie = cast[ptr InotifyEvent](addr buf[off])
+      if ie.len > 0:
+        var base = ""
+        for m in maps:
+          if m.wd == ie.wd.int:
+            base = m.base
+            break
+        if base.len > 0:
+          let name = cast[cstring](addr buf[off + sizeof(InotifyEvent)])
+          var path = base
+          if path.len > 0 and path[^1] != '/':
+            path.add '/'
+          path.add $name
+          if callback != nil:
+            callback(cstring(path), arg.watcher)
+      off += sizeof(InotifyEvent) + ie.len.int
+
+  for m in maps:
+    discard inotifyRmWatch(fd, m.wd.cint)
+  discard close(fd)
+
+# ── Public entry point ──────────────────────────────────────────────────────
 
 proc watch*(dirs: seq[string], cb: FileChangedCallback, watcher: pointer) =
   if dirs.len == 0: return
-  var cpaths = newSeq[cstring](dirs.len)
-  for i, d in dirs:
-    cpaths[i] = cstring(d)
-  watchPaths(addr cpaths[0], cint(dirs.len), cast[pointer](cb), watcher)
+  var arg = WatchThreadArg(dirs: dirs, cb: cast[pointer](cb), watcher: watcher)
+  var thread: Thread[WatchThreadArg]
+  createThread(thread, watcherThread, arg)
