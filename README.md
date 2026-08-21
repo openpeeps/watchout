@@ -1,15 +1,17 @@
 <p align="center">
     <img src="https://raw.githubusercontent.com/openpeep/watchout/main/.github/watchout-logo.png" width="170px"><br>
-    ⚡️ A fast, small, lightweight filesystem monitor. Yellin' for changes!
+    A fast, small, lightweight filesystem monitor. Yellin' for changes!
 </p>
 <p align="center">
   <a href="https://openpeeps.github.io/watchout/theindex.html">API reference</a> | <a href="#">Download</a> (not yet)<br>
   <img src="https://github.com/openpeeps/watchout/workflows/test/badge.svg" alt="Github Actions">  <img src="https://github.com/openpeeps/watchout/workflows/docs/badge.svg" alt="Github Actions">
 </p>
 
-## 😍 Key Features
-todo
-- [x] Open Source | `MIT` license
+## Key Features
+- Cross-platform (macOS, Linux, Windows)
+- Glob pattern filtering
+- Ignore hidden files
+- Zero external dependencies
 
 ## Installing
 ```
@@ -20,28 +22,41 @@ nimble install watchout
 ```nim
 import watchout
 
-proc onFound(file: File) =
-  echo "Found"
-  echo file.getPath
+let w = newWatchout("/path/to/watch")
 
-proc onChange(file: File) =
-  echo "Changed"
-  echo file.getPath
+w.onChange = proc(file: File) =
+  echo "Changed: ", file.getName()
 
-proc onDelete(file: File) =
-  echo "Deleted"
-  echo file.getPath
+w.onDelete = proc(file: File) =
+  echo "Deleted: ", file.getName()
 
-var w = newWatchout("../tests/*.nim", onChange, onFound, onDelete)
-w.start(waitThreads = true)
+w.start()
 ```
 
+### Pattern filtering
+```nim
+# Only watch .nim files
+let w = newWatchout("/path/to/watch", some("*.nim"))
+```
 
-### ❤ Contributions & Support
-- 🐛 Found a bug? [Create a new Issue](https://github.com/openpeeps/watchout/issues)
-- 👋 Wanna help? [Fork it!](https://github.com/openpeeps/watchout/fork)
-- 😎 [Get €20 in cloud credits from Hetzner](https://hetzner.cloud/?ref=Hm0mYGM9NxZ4)
+### Multiple directories
+```nim
+let w = newWatchout(@["/path/a", "/path/b"], some("*.txt"))
+```
 
-### 🎩 License
+### Configure hidden file handling
+```nim
+let w = newWatchout("/path/to/watch")
+w.ignoreHidden = false  # Include hidden files
+```
+
+## Requirements
+- Nim >= 2.0.0
+
+### Contributions & Support
+- Found a bug? [Create a new Issue](https://github.com/openpeeps/watchout/issues)
+- Wanna help? [Fork it!](https://github.com/openpeeps/watchout/fork)
+
+### License
 Watchout [MIT license](https://github.com/openpeeps/watchout/blob/main/LICENSE).<br>
 Copyright &copy; 2023 OpenPeeps & Contributors &mdash; All rights reserved.

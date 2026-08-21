@@ -1,27 +1,21 @@
-// A stupid simple filesystem monitor.
-//
-//   (c) George Lemon | MIT License
-//       Made by humans from OpenPeeps
-//       https://gitnub.com/openpeeps/watchout
+# watchout - macOS FSEvents backend
+#
+# Uses inline C via emit, similar to the original watcher_macos.c
+# but compiled as part of the Nim compilation unit.
 
-#import <CoreServices/CoreServices.h>
+{.emit: """
+#include <CoreServices/CoreServices.h>
 #include <CoreFoundation/CoreFoundation.h>
-#include <string.h>
-#include <limits.h>
 #include <pthread.h>
+#include <string.h>
+#include <stdlib.h>
 
-typedef void (*FileChangedCallback)(char *path, void *watcher);
+typedef void (*WatchCallback)(const char *path, void *watcher);
 
-static FileChangedCallback gCallback = NULL;
+static WatchCallback gCallback = NULL;
+static void *gWatcher = NULL;
 
-typedef struct {
-    char **dirs;
-    int dirCount;
-    FileChangedCallback callback;
-    void *watcher;
-} WatcherPathsThreadArgs;
-
-void callbackFunc(
+static void fseventCallback(
     ConstFSEventStreamRef streamRef,
     void *clientCallBackInfo,
     size_t numEvents,
@@ -32,8 +26,6 @@ void callbackFunc(
     char **paths = eventPaths;
     for (size_t i = 0; i < numEvents; ++i) {
         FSEventStreamEventFlags f = eventFlags[i];
-
-        // Ignore non-item or administrative events
         if (f & (kFSEventStreamEventFlagHistoryDone |
                  kFSEventStreamEventFlagKernelDropped |
                  kFSEventStreamEventFlagUserDropped |
@@ -43,26 +35,25 @@ void callbackFunc(
                  kFSEventStreamEventFlagUnmount)) {
             continue;
         }
-
-        // Only care about files (skip directory-only notifications)
         if (!(f & kFSEventStreamEventFlagItemIsFile)) continue;
-
-        // Only forward create/remove/modify/rename
         if (!(f & (kFSEventStreamEventFlagItemCreated |
                    kFSEventStreamEventFlagItemRemoved |
                    kFSEventStreamEventFlagItemRenamed |
                    kFSEventStreamEventFlagItemModified))) {
             continue;
         }
-
         if (gCallback) gCallback(paths[i], clientCallBackInfo);
     }
 }
 
-void *watcher_paths_thread_func(void *arg) {
-    WatcherPathsThreadArgs *args = (WatcherPathsThreadArgs *)arg;
-    gCallback = args->callback;
+typedef struct {
+    char **dirs;
+    int dirCount;
+    void *watcher;
+} WatcherArgs;
 
+static void *watcher_thread(void *arg) {
+    WatcherArgs *args = (WatcherArgs *)arg;
     if (args->dirCount <= 0) {
         free(args->dirs);
         free(args);
@@ -70,12 +61,6 @@ void *watcher_paths_thread_func(void *arg) {
     }
 
     CFMutableArrayRef pathsToWatch = CFArrayCreateMutable(NULL, args->dirCount, &kCFTypeArrayCallBacks);
-    if (!pathsToWatch) {
-        free(args->dirs);
-        free(args);
-        return NULL;
-    }
-
     for (int i = 0; i < args->dirCount; ++i) {
         CFStringRef path = CFStringCreateWithCString(NULL, args->dirs[i], kCFStringEncodingUTF8);
         if (path) {
@@ -84,10 +69,10 @@ void *watcher_paths_thread_func(void *arg) {
         }
     }
 
-    FSEventStreamContext context = (FSEventStreamContext){0, args->watcher, NULL, NULL, NULL};
+    FSEventStreamContext context = {0, args->watcher, NULL, NULL, NULL};
     FSEventStreamRef stream = FSEventStreamCreate(
         NULL,
-        &callbackFunc,
+        &fseventCallback,
         &context,
         pathsToWatch,
         kFSEventStreamEventIdSinceNow,
@@ -96,13 +81,20 @@ void *watcher_paths_thread_func(void *arg) {
         kFSEventStreamCreateFlagIgnoreSelf
     );
 
+    if (!stream) {
+        CFRelease(pathsToWatch);
+        free(args->dirs);
+        free(args);
+        return NULL;
+    }
+
     FSEventStreamScheduleWithRunLoop(stream, CFRunLoopGetCurrent(), kCFRunLoopDefaultMode);
     FSEventStreamStart(stream);
     CFRunLoopRun();
 
-    CFRelease(pathsToWatch);
     FSEventStreamInvalidate(stream);
     FSEventStreamRelease(stream);
+    CFRelease(pathsToWatch);
 
     for (int i = 0; i < args->dirCount; ++i) {
         free(args->dirs[i]);
@@ -112,16 +104,33 @@ void *watcher_paths_thread_func(void *arg) {
     return NULL;
 }
 
-void watch_paths(char **dirs, int dirCount, FileChangedCallback callback, void *watcher) {
-    pthread_t tid;
-    WatcherPathsThreadArgs *args = malloc(sizeof(WatcherPathsThreadArgs));
+void watch_paths(char **dirs, int dirCount, void *cb, void *watcher) {
+    gCallback = (WatchCallback)cb;
+    gWatcher = watcher;
+    if (dirCount <= 0) return;
+
+    WatcherArgs *args = (WatcherArgs *)malloc(sizeof(WatcherArgs));
     args->dirCount = dirCount;
-    args->callback = callback;
     args->watcher = watcher;
-    args->dirs = malloc(sizeof(char *) * dirCount);
+    args->dirs = (char **)malloc(sizeof(char *) * dirCount);
     for (int i = 0; i < dirCount; ++i) {
         args->dirs[i] = strdup(dirs[i]);
     }
-    pthread_create(&tid, NULL, watcher_paths_thread_func, args);
+
+    pthread_t tid;
+    pthread_create(&tid, NULL, watcher_thread, args);
     pthread_detach(tid);
 }
+""".}
+
+proc watchPaths(dirs: ptr cstring, dirCount: cint, cb: pointer,
+                watcher: pointer) {.cdecl, importc: "watch_paths".}
+
+type FileChangedCallback* = proc(path: cstring, watcher: pointer) {.cdecl.}
+
+proc watch*(dirs: seq[string], cb: FileChangedCallback, watcher: pointer) =
+  if dirs.len == 0: return
+  var cpaths = newSeq[cstring](dirs.len)
+  for i, d in dirs:
+    cpaths[i] = cstring(d)
+  watchPaths(addr cpaths[0], cint(dirs.len), cast[pointer](cb), watcher)

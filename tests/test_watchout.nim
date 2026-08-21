@@ -153,17 +153,72 @@ suite "Event handling":
     handleEvent(w, f)
     check true
 
-  test "onFound is never called":
+  test "onFound fires when file is first tracked":
     let d = tempDir()
     defer: removeDir(d)
     let f = d / "test.txt"
     writeFile(f, "hello")
     let w = newWatchout(d)
-    var foundCalled = false
-    w.onFound = proc(f: watchout.File) = foundCalled = true
+    var foundCount = 0
+    w.onFound = proc(f: watchout.File) = foundCount += 1
     w.onChange = proc(f: watchout.File) = discard
     handleEvent(w, f)
-    check not foundCalled
+    check foundCount == 1
+    # Second call should not fire onFound again
+    handleEvent(w, f)
+    check foundCount == 1
+
+  test "hidden files are ignored by default":
+    let d = tempDir()
+    defer: removeDir(d)
+    let f = d / ".hidden.txt"
+    writeFile(f, "hello")
+    let w = newWatchout(d)
+    var called = false
+    w.onChange = proc(f: watchout.File) = called = true
+    handleEvent(w, f)
+    check not called
+
+  test "hidden files are not ignored when ignoreHidden is false":
+    let d = tempDir()
+    defer: removeDir(d)
+    let f = d / ".hidden.txt"
+    writeFile(f, "hello")
+    let w = newWatchout(d)
+    w.ignoreHidden = false
+    var called = false
+    w.onChange = proc(f: watchout.File) = called = true
+    handleEvent(w, f)
+    check called
+
+  test "pattern filtering works":
+    let d = tempDir()
+    defer: removeDir(d)
+    let f1 = d / "test.nim"
+    let f2 = d / "test.txt"
+    writeFile(f1, "code")
+    writeFile(f2, "text")
+    let w = newWatchout(d, some("*.nim"))
+    var changed: seq[watchout.File] = @[]
+    w.onChange = proc(f: watchout.File) = changed.add(f)
+    handleEvent(w, f1)
+    handleEvent(w, f2)
+    check changed.len == 1
+    check getPath(changed[0]) == f1
+
+  test "pattern with multiple wildcards":
+    let d = tempDir()
+    defer: removeDir(d)
+    let f1 = d / "test_nim_file.nim"
+    let f2 = d / "test_txt_file.txt"
+    writeFile(f1, "code")
+    writeFile(f2, "text")
+    let w = newWatchout(d, some("test_*_file.*"))
+    var changed: seq[watchout.File] = @[]
+    w.onChange = proc(f: watchout.File) = changed.add(f)
+    handleEvent(w, f1)
+    handleEvent(w, f2)
+    check changed.len == 2
 
 suite "Watcher integration":
   test "start with empty dirs returns immediately":
