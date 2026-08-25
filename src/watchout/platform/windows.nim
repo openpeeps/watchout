@@ -162,7 +162,7 @@ proc watcherThread(arg: WatchThreadArg) {.thread.} =
     var offset = 0
     while true:
       let fni = cast[ptr FILE_NOTIFY_INFORMATION](addr buffer[offset])
-      let wlen = int(fni.FileNameLength div sizeof(WCHAR))
+      let wlen = int(fni.FileNameLength) div sizeof(WCHAR)
 
       # Build wide path = dir + separator + filename
       var wpath: array[MAX_PATH, WCHAR]
