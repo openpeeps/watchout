@@ -13,7 +13,11 @@ proc tempDir: string =
   result = testRoot / "watchout_test_" & $rand(high(int))
   createDir(result)
 
-cleanTestRoot()
+# Lazy init: only clean if tests/temp already exists from previous run
+if dirExists(testRoot):
+  cleanTestRoot()
+else:
+  createDir(testRoot)
 
 proc spTouch(path: string) =
   # Cross-platform touch: create or update file via Nim stdlib
@@ -240,6 +244,9 @@ suite "Event handling":
     check changed.len == 2
 
 suite "Watcher integration":
+  setup:
+    cleanTestRoot()
+
   test "start with empty dirs returns immediately":
     let w = newWatchout(newSeq[string]())
     var called = false

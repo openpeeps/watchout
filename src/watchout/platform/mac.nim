@@ -43,7 +43,8 @@ const
   kCFStringEncodingUTF8* = 0x08000100'u32
   kFSEventStreamEventIdSinceNow* = 0xFFFFFFFFFFFFFFFF'u64
   kFSEventStreamCreateFlagFileEvents* = 0x00000010'u32
-  kFSEventStreamCreateFlagIgnoreSelf* = 0x00000002'u32
+  # kFSEventStreamCreateFlagIgnoreSelf = 0x00000002
+  # Removed: self-generated events must be observed for tests and same-process monitoring
 
   kFSEventStreamEventFlagItemIsFile*   = 0x00000010
   kFSEventStreamEventFlagItemCreated*  = 0x00000100
@@ -107,6 +108,10 @@ static void fseventCallback(
         if (f & ignoreMask) continue;
         if (!(f & kFSEventStreamEventFlagItemIsFile)) continue;
         if ((f & itemMask) == 0) continue;
+        #ifdef DEBUG_FS
+        fprintf(stderr, "[fsevent] path=%s flags=0x%x\n", paths[i], f);
+        fflush(stderr);
+        #endif
         if (gCB) gCB(paths[i], clientCallBackInfo);
     }
 }
@@ -137,12 +142,14 @@ static void *watcher_thread(void *arg) {
         &context,
         pathsToWatch,
         kFSEventStreamEventIdSinceNow,
-        0.5,
-        kFSEventStreamCreateFlagFileEvents |
-        kFSEventStreamCreateFlagIgnoreSelf
+        0.05,
+        kFSEventStreamCreateFlagFileEvents
     );
 
     if (!stream) {
+        fprintf(stderr, "[watchout] FSEventStreamCreate FAILED for %d dirs\n", dirCount);
+        for (int i = 0; i < dirCount; i++) fprintf(stderr, "  dir[%d] = %s\n", i, dirs[i]);
+        fflush(stderr);
         CFRelease(pathsToWatch);
         free(args->dirs);
         free(args);
@@ -189,12 +196,14 @@ proc watch*(dirs: seq[string], cb: FileChangedCallback, watcher: pointer) =
   if dirs.len == 0: return
 
   # Allocate C strings outside the GC (safe to pass across threads)
+  # Use absolute paths so CoreServices resolves them correctly
   let cstrings = cast[ptr UncheckedArray[cstring]](
     alloc0(sizeof(cstring) * dirs.len))
   for i, d in dirs:
-    let buf = alloc(d.len + 1)
-    copyMem(buf, unsafeAddr d[0], d.len)
-    cast[ptr UncheckedArray[char]](buf)[d.len] = '\0'
+    let abs = absolutePath(d)
+    let buf = alloc(abs.len + 1)
+    copyMem(buf, unsafeAddr abs[0], abs.len)
+    cast[ptr UncheckedArray[char]](buf)[abs.len] = '\0'
     cstrings[i] = cast[cstring](buf)
 
   watchPaths(addr cstrings[0], cint(dirs.len), cast[pointer](cb), watcher)
