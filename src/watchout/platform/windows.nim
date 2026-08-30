@@ -19,7 +19,7 @@ type
   BOOL   = int32
   WCHAR  = uint16
 
-  FileChangedCallback* = proc(path: cstring, watcher: pointer) {.cdecl.}
+  FileChangedCallback* = proc(path: cstring, watcher: pointer) {.cdecl, gcsafe.}
 
   FILE_NOTIFY_INFORMATION {.importc: "FILE_NOTIFY_INFORMATION",
                             header: "<windows.h>",
@@ -114,16 +114,17 @@ proc wideCharToMultiByte(
 
 type
   WatchThreadArg = object
-    dir:     string
+    dir:     cstring
     cb:      pointer
     watcher: pointer
 
-proc watcherThread(arg: WatchThreadArg) {.thread.} =
+proc watcherThread(argPtr: ptr WatchThreadArg) {.thread.} =
+  let arg = argPtr[]
   let callback = cast[FileChangedCallback](arg.cb)
 
   # Convert UTF-8 dir to wide string
   var wdir: array[MAX_PATH, WCHAR]
-  let wdirLen = multiByteToWideChar(CP_UTF8, 0, cstring(arg.dir), -1,
+  let wdirLen = multiByteToWideChar(CP_UTF8, 0, arg.dir, -1,
       addr wdir[0], MAX_PATH)
   if wdirLen == 0: return
 
@@ -199,6 +200,13 @@ proc watcherThread(arg: WatchThreadArg) {.thread.} =
 proc watch*(dirs: seq[string], cb: FileChangedCallback, watcher: pointer) =
   if dirs.len == 0: return
   for d in dirs:
-    var arg = WatchThreadArg(dir: d, cb: cast[pointer](cb), watcher: watcher)
-    var thread: Thread[WatchThreadArg]
-    createThread(thread, watcherThread, arg)
+    let cstr = cast[cstring](alloc(d.len + 1))
+    if d.len > 0:
+      copyMem(cstr, unsafeAddr d[0], d.len)
+    cast[ptr UncheckedArray[char]](cstr)[d.len] = '\0'
+    let argPtr = cast[ptr WatchThreadArg](alloc0(sizeof(WatchThreadArg)))
+    argPtr.dir = cstr
+    argPtr.cb = cast[pointer](cb)
+    argPtr.watcher = watcher
+    var thread: Thread[ptr WatchThreadArg]
+    createThread(thread, watcherThread, argPtr)

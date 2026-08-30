@@ -25,7 +25,7 @@ type
   FSEventStreamEventFlags* = uint32
   FSEventStreamEventId* = uint64
 
-  FileChangedCallback* = proc(path: cstring, watcher: pointer) {.cdecl.}
+  FileChangedCallback* = proc(path: cstring, watcher: pointer) {.cdecl, gcsafe.}
 
   FSEventStreamContext {.pure, final.} = object
     version*:          CFIndex

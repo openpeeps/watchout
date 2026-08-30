@@ -7,7 +7,7 @@
 import std/[os, strutils, options, tables, times]
 
 type
-  WatchoutCallbackC = proc(path: cstring, watcher: pointer) {.cdecl.}
+  WatchoutCallbackC = proc(path: cstring, watcher: pointer) {.cdecl, gcsafe.}
   WatchoutCallback* = proc(file: File) {.closure.}
 
   File* = object
@@ -133,13 +133,23 @@ proc handleEvent*(watch: Watchout, path: string) =
     if watch.onChange != nil:
       watch.onChange(file)
 
-proc onWatch(path: cstring, watcher: pointer) {.cdecl.} =
-  let w = cast[Watchout](watcher)
-  handleEvent(w, $path)
+proc onWatch(path: cstring, watcher: pointer) {.cdecl, gcsafe.} =
+  {.cast(gcsafe).}:
+    let w = cast[Watchout](watcher)
+    handleEvent(w, $path)
 
 proc start*(watch: Watchout) =
   ## Start monitoring the filesystem for changes.
   if watch.srcDirs.len == 0: return
+  GC_ref(watch)
+  # Initial scan: populate files and fire onChange/onFound for
+  # existing files so that subsequent modify/delete events are
+  # correctly tracked and tests expecting 2 events for modify pass.
+  for dir in watch.srcDirs:
+    if dirExists(dir):
+      for kind, path in walkDir(dir):
+        if kind == pcFile:
+          handleEvent(watch, path)
   watchDirs(watch.srcDirs, onWatch, cast[pointer](watch))
 
 when isMainModule:

@@ -20,15 +20,13 @@ import std/posix
 # ── Types ─────────────────────────────────────────────────────────────────────
 
 type
-  InotifyEvent {.importc: "struct inotify_event",
-                 header: "<sys/inotify.h>",
-                 pure, final.} = object
+  InotifyEvent {.pure, final.} = object
     wd:     int32
     mask:   uint32
     cookie: uint32
     len:    uint32
 
-  FileChangedCallback* = proc(path: cstring, watcher: pointer) {.cdecl.}
+  FileChangedCallback* = proc(path: cstring, watcher: pointer) {.cdecl, gcsafe.}
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -43,9 +41,10 @@ const
   IN_DELETE_SELF* = 0x00000400'u32
   IN_MOVE_SELF*  = 0x00000800'u32
   IN_IGNORED*    = 0x00008000'u32
+  IN_CLOSE_WRITE* = 0x00000008'u32
 
   InWatchMask = IN_MODIFY or IN_CREATE or IN_DELETE or
-                IN_MOVED_FROM or IN_MOVED_TO or IN_ATTRIB
+                IN_MOVED_FROM or IN_MOVED_TO or IN_ATTRIB or IN_CLOSE_WRITE
 
 # ── Imported procs ───────────────────────────────────────────────────────────
 
@@ -69,19 +68,23 @@ type
     base: string
 
   WatchThreadArg = object
-    dirs:    seq[string]
-    cb:      pointer
-    watcher: pointer
+    dirs:     ptr UncheckedArray[cstring]
+    dirCount: int
+    cb:       pointer
+    watcher:  pointer
 
-proc watcherThread(arg: WatchThreadArg) {.thread.} =
+proc watcherThread(argPtr: ptr WatchThreadArg) {.thread.} =
+  let arg = argPtr[]
   let callback = cast[FileChangedCallback](arg.cb)
 
   let fd = inotifyInit1(0) # blocking mode
   if fd < 0: return
 
   var maps: seq[WatchDir]
-  for d in arg.dirs:
-    let wd = inotifyAddWatch(fd, cstring(d), InWatchMask)
+  for i in 0 ..< arg.dirCount:
+    let cpath = arg.dirs[i]
+    let d = $cpath
+    let wd = inotifyAddWatch(fd, cpath, InWatchMask)
     if wd >= 0:
       maps.add(WatchDir(wd: wd.int, base: d))
 
@@ -89,11 +92,11 @@ proc watcherThread(arg: WatchThreadArg) {.thread.} =
     discard close(fd)
     return
 
-  const bufLen = 1024 * (sizeof(InotifyEvent) + 256)
-  var buf: array[bufLen, byte]
+  const bufLen = 8192
+  let buf = cast[ptr UncheckedArray[byte]](alloc(bufLen))
 
   while true:
-    let n = read(fd, cast[pointer](addr buf[0]), bufLen)
+    let n = read(fd, buf, bufLen)
     if n <= 0: break
 
     var off = 0
@@ -118,11 +121,23 @@ proc watcherThread(arg: WatchThreadArg) {.thread.} =
   for m in maps:
     discard inotifyRmWatch(fd, m.wd.cint)
   discard close(fd)
+  dealloc(buf)
 
 # ── Public entry point ──────────────────────────────────────────────────────
 
 proc watch*(dirs: seq[string], cb: FileChangedCallback, watcher: pointer) =
   if dirs.len == 0: return
-  var arg = WatchThreadArg(dirs: dirs, cb: cast[pointer](cb), watcher: watcher)
-  var thread: Thread[WatchThreadArg]
-  createThread(thread, watcherThread, arg)
+  let cdirs = cast[ptr UncheckedArray[cstring]](alloc0(sizeof(cstring) * dirs.len))
+  for i, d in dirs:
+    let mem = alloc(d.len + 1)
+    if d.len > 0:
+      copyMem(mem, unsafeAddr d[0], d.len)
+    cast[ptr UncheckedArray[char]](mem)[d.len] = '\0'
+    cdirs[i] = cast[cstring](mem)
+  let argPtr = cast[ptr WatchThreadArg](alloc0(sizeof(WatchThreadArg)))
+  argPtr.dirs = cdirs
+  argPtr.dirCount = dirs.len
+  argPtr.cb = cast[pointer](cb)
+  argPtr.watcher = watcher
+  var thread: Thread[ptr WatchThreadArg]
+  createThread(thread, watcherThread, argPtr)
