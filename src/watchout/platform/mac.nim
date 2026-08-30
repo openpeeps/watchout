@@ -149,8 +149,7 @@ static void *watcher_thread(void *arg) {
     );
 
     if (!stream) {
-        fprintf(stderr, "[watchout] FSEventStreamCreate FAILED for %d dirs\n", dirCount);
-        for (int i = 0; i < dirCount; i++) fprintf(stderr, "  dir[%d] = %s\n", i, dirs[i]);
+        fprintf(stderr, "[watchout] FSEventStreamCreate FAILED\n");
         fflush(stderr);
         CFRelease(pathsToWatch);
         free(args->dirs);
