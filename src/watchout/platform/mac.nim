@@ -13,6 +13,8 @@
 ## frame-tracking crashes when a Nim {.thread.} proc is called from
 ## CoreFoundation's dispatch path.
 
+import std/os
+
 # ── Linker flags ─────────────────────────────────────────────────────────────
 
 {.passL: "-framework CoreServices -framework CoreFoundation".}
