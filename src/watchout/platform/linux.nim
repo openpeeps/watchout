@@ -139,5 +139,5 @@ proc watch*(dirs: seq[string], cb: FileChangedCallback, watcher: pointer) =
   argPtr.dirCount = dirs.len
   argPtr.cb = cast[pointer](cb)
   argPtr.watcher = watcher
-  var thread: Thread[ptr WatchThreadArg]
-  createThread(thread, watcherThread, argPtr)
+  let threadPtr = cast[ptr Thread[ptr WatchThreadArg]](alloc0(sizeof(Thread[ptr WatchThreadArg])))
+  createThread(threadPtr[], watcherThread, argPtr)

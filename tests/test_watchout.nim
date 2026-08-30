@@ -1,18 +1,37 @@
 import unittest
-import std/[os, times, strutils, random, options, osproc]
+import std/[os, times, random, options, strutils]
 import watchout
 
-randomize()
+const testRoot = "tests/temp"
+
+proc cleanTestRoot() =
+  if dirExists(testRoot):
+    removeDir(testRoot)
+  createDir(testRoot)
 
 proc tempDir: string =
-  result = getTempDir() / "watchout_test_" & $rand(high(int))
+  result = testRoot / "watchout_test_" & $rand(high(int))
   createDir(result)
 
+cleanTestRoot()
+
 proc spTouch(path: string) =
-  discard execCmd("touch " & path.quoteShell)
+  # Cross-platform touch: create or update file via Nim stdlib
+  # (Windows has no `touch`/`rm` shell commands)
+  try:
+    if fileExists(path):
+      # overwrite to update mtime and trigger inotify/ReadDirectoryChangesW
+      writeFile(path, "touch " & $epochTime())
+    else:
+      writeFile(path, "")
+  except:
+    discard
 
 proc spDelete(path: string) =
-  discard execCmd("rm " & path.quoteShell)
+  try:
+    removeFile(path)
+  except:
+    discard
 
 suite "Watchout API":
   test "newWatchout with single directory":
@@ -327,3 +346,5 @@ suite "Watcher integration":
         if not found:
           sleep(50)
       check found
+
+cleanTestRoot()

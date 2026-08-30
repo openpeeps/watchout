@@ -105,7 +105,7 @@ proc wideCharToMultiByte(
     cbMultiByte: cint,
     lpDefaultChar: pointer,
     lpUsedDefaultChar: pointer
-): cint {.
+ ): cint {.
   importc: "WideCharToMultiByte",
   stdcall,
   dynlib: "kernel32".}
@@ -119,81 +119,97 @@ type
     watcher: pointer
 
 proc watcherThread(argPtr: ptr WatchThreadArg) {.thread.} =
-  let arg = argPtr[]
-  let callback = cast[FileChangedCallback](arg.cb)
+  try:
+    let arg = argPtr[]
+    let callback = cast[FileChangedCallback](arg.cb)
+    if arg.dir.isNil or callback.isNil:
+      return
 
-  # Convert UTF-8 dir to wide string
-  var wdir: array[MAX_PATH, WCHAR]
-  let wdirLen = multiByteToWideChar(CP_UTF8, 0, arg.dir, -1,
-      addr wdir[0], MAX_PATH)
-  if wdirLen == 0: return
+    # Convert UTF-8 dir to wide string
+    var wdir: array[MAX_PATH, WCHAR]
+    let wdirLen = multiByteToWideChar(CP_UTF8, 0, arg.dir, -1,
+        addr wdir[0], MAX_PATH)
+    if wdirLen == 0: return
 
-  let hDir = createFileW(
-    addr wdir[0],
-    FILE_LIST_DIRECTORY,
-    FILE_SHARE_READ or FILE_SHARE_WRITE or FILE_SHARE_DELETE,
-    nil,
-    OPEN_EXISTING,
-    FILE_FLAG_BACKUP_SEMANTICS,
-    nil
-  )
-  if hDir == nil or hDir == INVALID_HANDLE: return
-
-  var buffer: array[64 * 1024, byte]
-  var bytesReturned: DWORD
-
-  while true:
-    let ok = readDirectoryChangesW(
-      hDir,
-      addr buffer[0],
-      buffer.len.DWORD,
-      1, # TRUE — watch subtree
-      FILE_NOTIFY_CHANGE_FILE_NAME or
-      FILE_NOTIFY_CHANGE_DIR_NAME or
-      FILE_NOTIFY_CHANGE_ATTRIBUTES or
-      FILE_NOTIFY_CHANGE_SIZE or
-      FILE_NOTIFY_CHANGE_LAST_WRITE or
-      FILE_NOTIFY_CHANGE_CREATION,
-      addr bytesReturned,
+    let hDir = createFileW(
+      addr wdir[0],
+      FILE_LIST_DIRECTORY,
+      FILE_SHARE_READ or FILE_SHARE_WRITE or FILE_SHARE_DELETE,
       nil,
+      OPEN_EXISTING,
+      FILE_FLAG_BACKUP_SEMANTICS,
       nil
     )
-    if ok == 0: break
+    if hDir == nil or hDir == INVALID_HANDLE: return
 
-    var offset = 0
+    # Use heap for large buffer to avoid thread stack overflow (64 KiB)
+    let buffer = cast[ptr UncheckedArray[byte]](alloc(64 * 1024))
+    var bytesReturned: DWORD
+
     while true:
-      let fni = cast[ptr FILE_NOTIFY_INFORMATION](addr buffer[offset])
-      let wlen = int(fni.FileNameLength) div sizeof(WCHAR)
+      let ok = readDirectoryChangesW(
+        hDir,
+        buffer,
+        DWORD(64 * 1024),
+        1, # TRUE — watch subtree
+        FILE_NOTIFY_CHANGE_FILE_NAME or
+        FILE_NOTIFY_CHANGE_DIR_NAME or
+        FILE_NOTIFY_CHANGE_ATTRIBUTES or
+        FILE_NOTIFY_CHANGE_SIZE or
+        FILE_NOTIFY_CHANGE_LAST_WRITE or
+        FILE_NOTIFY_CHANGE_CREATION,
+        addr bytesReturned,
+        nil,
+        nil
+      )
+      if ok == 0: break
 
-      # Build wide path = dir + separator + filename
-      var wpath: array[MAX_PATH, WCHAR]
-      var dlen = 0
-      while dlen < wdirLen - 1 and dlen < MAX_PATH - 1:
-        wpath[dlen] = wdir[dlen]
-        inc dlen
-      if dlen > 0 and wpath[dlen - 1] != WCHAR('\\'):
-        if dlen < MAX_PATH - 1:
-          wpath[dlen] = WCHAR('\\')
+      var offset = 0
+      while offset < int(bytesReturned):
+        let fni = cast[ptr FILE_NOTIFY_INFORMATION](addr buffer[offset])
+        if fni.FileNameLength == 0 or fni.FileNameLength > DWORD(MAX_PATH * 2):
+          if fni.NextEntryOffset == 0: break
+          offset += int(fni.NextEntryOffset)
+          continue
+        let wlen = int(fni.FileNameLength) div sizeof(WCHAR)
+        if wlen <= 0 or wlen >= MAX_PATH:
+          if fni.NextEntryOffset == 0: break
+          offset += int(fni.NextEntryOffset)
+          continue
+
+        # Build wide path = dir + separator + filename
+        var wpath: array[MAX_PATH, WCHAR]
+        var dlen = 0
+        while dlen < wdirLen - 1 and dlen < MAX_PATH - 1:
+          wpath[dlen] = wdir[dlen]
           inc dlen
+        if dlen > 0 and wpath[dlen - 1] != WCHAR('\\'):
+          if dlen < MAX_PATH - 1:
+            wpath[dlen] = WCHAR('\\')
+            inc dlen
 
-      var i = 0
-      while i < wlen and dlen < MAX_PATH - 1:
-        wpath[dlen] = fni.FileName[i]
-        inc dlen
-        inc i
-      wpath[dlen] = WCHAR(0)
+        var i = 0
+        while i < wlen and dlen < MAX_PATH - 1:
+          wpath[dlen] = fni.FileName[i]
+          inc dlen
+          inc i
+        wpath[dlen] = WCHAR(0)
 
-      # Convert back to UTF-8
-      var pathUtf8: array[MAX_PATH * 3, byte]
-      let utf8Len = wideCharToMultiByte(CP_UTF8, 0, addr wpath[0], -1,
-          addr pathUtf8[0], MAX_PATH * 3, nil, nil)
-      if utf8Len > 0 and callback != nil:
-        callback(cstring(addr pathUtf8[0]), arg.watcher)
+        # Convert back to UTF-8
+        var pathUtf8: array[MAX_PATH * 3, byte]
+        let utf8Len = wideCharToMultiByte(CP_UTF8, 0, addr wpath[0], -1,
+            addr pathUtf8[0], MAX_PATH * 3, nil, nil)
+        if utf8Len > 0 and callback != nil:
+          {.cast(gcsafe).}:
+            callback(cast[cstring](addr pathUtf8[0]), arg.watcher)
 
-      if fni.NextEntryOffset == 0: break
-      offset += int(fni.NextEntryOffset)
+        if fni.NextEntryOffset == 0: break
+        offset += int(fni.NextEntryOffset)
 
-  discard closeHandle(hDir)
+    dealloc(buffer)
+    discard closeHandle(hDir)
+  except:
+    discard
 
 # ── Public entry point ──────────────────────────────────────────────────────
 
@@ -208,5 +224,9 @@ proc watch*(dirs: seq[string], cb: FileChangedCallback, watcher: pointer) =
     argPtr.dir = cstr
     argPtr.cb = cast[pointer](cb)
     argPtr.watcher = watcher
-    var thread: Thread[ptr WatchThreadArg]
-    createThread(thread, watcherThread, argPtr)
+    # Allocate Thread on heap so its `addr(t)` remains valid after this
+    # proc returns — `createThread` passes `addr(t)` to the OS and the new
+    # thread dereferences it. A stack-allocated `var thread` would become
+    # dangling as soon as `watch` returns, causing AV on Windows.
+    let threadPtr = cast[ptr Thread[ptr WatchThreadArg]](alloc0(sizeof(Thread[ptr WatchThreadArg])))
+    createThread(threadPtr[], watcherThread, argPtr)
