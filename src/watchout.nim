@@ -130,8 +130,6 @@ proc handleEvent*(watch: Watchout, path: string) =
     watch.files[path] = file
     if watch.onFound != nil:
       watch.onFound(file)
-    if watch.onChange != nil:
-      watch.onChange(file)
 
 proc onWatch(path: cstring, watcher: pointer) {.cdecl, gcsafe.} =
   {.cast(gcsafe).}:
@@ -142,14 +140,20 @@ proc start*(watch: Watchout) =
   ## Start monitoring the filesystem for changes.
   if watch.srcDirs.len == 0: return
   GC_ref(watch)
-  # Initial scan: populate files and fire onChange/onFound for
-  # existing files so that subsequent modify/delete events are
-  # correctly tracked and tests expecting 2 events for modify pass.
+  # Initial scan: silently populate tracked files without firing
+  # callbacks. This avoids duplicate precompile + stray notifyAllClients
+  # during serve startup (wsServer not yet ready) and respects the
+  # distinction: Found == discovery, Change == modification.
   for dir in watch.srcDirs:
     if dirExists(dir):
       for kind, path in walkDir(dir):
         if kind == pcFile:
-          handleEvent(watch, path)
+          if watch.ignoreHidden and path.isHidden(): continue
+          if not path.matchesPattern(watch.pattern): continue
+          if not fileExists(path): continue
+          if watch.files.hasKey(path): continue
+          let file = File(path: path, lastModified: getFileInfo(path).lastWriteTime)
+          watch.files[path] = file
   watchDirs(watch.srcDirs, onWatch, cast[pointer](watch))
 
 when isMainModule:
