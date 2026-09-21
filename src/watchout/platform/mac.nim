@@ -40,6 +40,8 @@ type
                      pure, final.} = object
 
 # ── FSEvents constants ───────────────────────────────────────────────────────
+# Values must match <CoreServices/FSEvents.h>. The C emit block below uses
+# the system headers directly; these Nim-side mirrors exist for Nim code.
 
 const
   kCFStringEncodingUTF8* = 0x08000100'u32
@@ -48,11 +50,25 @@ const
   # kFSEventStreamCreateFlagIgnoreSelf = 0x00000002
   # Removed: self-generated events must be observed for tests and same-process monitoring
 
-  kFSEventStreamEventFlagItemIsFile*   = 0x00000010
-  kFSEventStreamEventFlagItemCreated*  = 0x00000100
-  kFSEventStreamEventFlagItemRemoved*  = 0x00000200
-  kFSEventStreamEventFlagItemRenamed*  = 0x00000400
-  kFSEventStreamEventFlagItemModified* = 0x00000800
+  kFSEventStreamEventFlagItemCreated*     = 0x00000100
+  kFSEventStreamEventFlagItemRemoved*     = 0x00000200
+  kFSEventStreamEventFlagItemInodeMetaMod* = 0x00000400
+  kFSEventStreamEventFlagItemRenamed*     = 0x00000800
+  kFSEventStreamEventFlagItemModified*    = 0x00001000
+  kFSEventStreamEventFlagItemFinderInfoMod* = 0x00002000
+  kFSEventStreamEventFlagItemChangeOwner* = 0x00004000
+  kFSEventStreamEventFlagItemXattrMod*    = 0x00008000
+  kFSEventStreamEventFlagItemIsFile*      = 0x00010000
+  kFSEventStreamEventFlagItemIsDir*       = 0x00020000
+
+# Called once at the top of the C watcher thread (a raw pthread, foreign to
+# the Nim runtime) so callbacks into Nim have thread-local GC state.
+# Must run on the watcher thread itself before any other Nim code.
+proc watchoutForeignThreadInit() {.exportc: "watchoutForeignThreadInit".} =
+  setupForeignThreadGc()
+
+proc watchoutForeignThreadTeardown() {.exportc: "watchoutForeignThreadTeardown".} =
+  tearDownForeignThreadGc()
 
 # ── Imported vars ────────────────────────────────────────────────────────────
 
@@ -76,6 +92,8 @@ var
 
 typedef void (*FileChangedCB)(char *path, void *watcher);
 static FileChangedCB gCB = NULL;
+void watchoutForeignThreadInit(void);
+void watchoutForeignThreadTeardown(void);
 
 typedef struct {
     char **dirs;
@@ -103,6 +121,7 @@ static void fseventCallback(
     unsigned int itemMask =
         kFSEventStreamEventFlagItemCreated |
         kFSEventStreamEventFlagItemRemoved |
+        kFSEventStreamEventFlagItemInodeMetaMod |
         kFSEventStreamEventFlagItemRenamed |
         kFSEventStreamEventFlagItemModified;
     for (size_t i = 0; i < numEvents; ++i) {
@@ -125,6 +144,9 @@ static void *watcher_thread(void *arg) {
         free(args);
         return NULL;
     }
+    // Raw pthread, foreign to the Nim runtime: register thread-local GC
+    // state before any callback into Nim, tear down when the runloop exits.
+    watchoutForeignThreadInit();
 
     CFMutableArrayRef pathsToWatch = CFArrayCreateMutable(
         NULL, args->dirCount, &kCFTypeArrayCallBacks);
@@ -162,6 +184,7 @@ static void *watcher_thread(void *arg) {
     FSEventStreamStart(stream);
     CFRunLoopRun();
 
+    watchoutForeignThreadTeardown();
     FSEventStreamStop(stream);
     FSEventStreamInvalidate(stream);
     FSEventStreamRelease(stream);

@@ -158,15 +158,17 @@ proc start*(watch: Watchout) =
   # distinction: Found == discovery, Change == modification.
   for dir in watch.srcDirs:
     if dirExists(dir):
-      for kind, path in walkDir(dir):
-        if kind == pcFile:
-          if watch.ignoreHidden and path.isHidden(): continue
-          if not path.matchesPattern(watch.pattern): continue
-          if not fileExists(path): continue
-          let key = canonicalKey(path)
-          if watch.files.hasKey(key): continue
-          let file = File(path: path, lastModified: getFileInfo(path).lastWriteTime)
-          watch.files[key] = file
+      # Recursive: FSEvents itself watches subdirectories, so the seed
+      # must too, otherwise nested files (e.g. views/components/*.timl)
+      # are misclassified as discoveries on first change.
+      for path in walkDirRec(dir):
+        if watch.ignoreHidden and path.isHidden(): continue
+        if not path.matchesPattern(watch.pattern): continue
+        if not fileExists(path): continue
+        let key = canonicalKey(path)
+        if watch.files.hasKey(key): continue
+        let file = File(path: path, lastModified: getFileInfo(path).lastWriteTime)
+        watch.files[key] = file
   watchDirs(watch.srcDirs, onWatch, cast[pointer](watch))
 
 when isMainModule:
