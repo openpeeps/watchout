@@ -70,17 +70,20 @@ suite "Watchout API":
     check w.onDelete.isNil
 
 suite "Event handling":
-  test "new file fires onChange":
+  test "new file fires onFound":
     let d = tempDir()
     defer: removeDir(d)
     let f = d / "test.txt"
     writeFile(f, "hello")
     let w = newWatchout(d)
+    var found: seq[watchout.File] = @[]
     var changed: seq[watchout.File] = @[]
+    w.onFound = proc(f: watchout.File) = found.add(f)
     w.onChange = proc(f: watchout.File) = changed.add(f)
     handleEvent(w, f)
-    check changed.len == 1
-    check getPath(changed[0]) == f
+    check found.len == 1
+    check changed.len == 0
+    check getPath(found[0]) == f
 
   test "modified file fires onChange":
     let d = tempDir()
@@ -88,14 +91,18 @@ suite "Event handling":
     let f = d / "test.txt"
     writeFile(f, "hello")
     let w = newWatchout(d)
+    var foundCount = 0
     var changeCount = 0
+    w.onFound = proc(f: watchout.File) = foundCount += 1
     w.onChange = proc(f: watchout.File) = changeCount += 1
     handleEvent(w, f)
-    check changeCount == 1
+    check foundCount == 1
+    check changeCount == 0
     sleep(1001)
     writeFile(f, "modified")
     handleEvent(w, f)
-    check changeCount == 2
+    check foundCount == 1
+    check changeCount == 1
 
   test "unchanged file does not fire onChange again":
     let d = tempDir()
@@ -103,11 +110,14 @@ suite "Event handling":
     let f = d / "test.txt"
     writeFile(f, "hello")
     let w = newWatchout(d)
+    var foundCount = 0
     var changeCount = 0
+    w.onFound = proc(f: watchout.File) = foundCount += 1
     w.onChange = proc(f: watchout.File) = changeCount += 1
     handleEvent(w, f)
     handleEvent(w, f)
-    check changeCount == 1
+    check foundCount == 1
+    check changeCount == 0
 
   test "getName and getPath from callback":
     let d = tempDir()
@@ -116,7 +126,7 @@ suite "Event handling":
     writeFile(f, "code")
     let w = newWatchout(d)
     var captured: watchout.File
-    w.onChange = proc(f: watchout.File) = captured = f
+    w.onFound = proc(f: watchout.File) = captured = f
     handleEvent(w, f)
     check getPath(captured) == f
     check getName(captured) == "mylib.nim"
@@ -141,17 +151,17 @@ suite "Event handling":
     let f = d / "test.txt"
     writeFile(f, "hello")
     let w = newWatchout(d)
-    var changeCount = 0
+    var foundCount = 0
     var deleteCount = 0
-    w.onChange = proc(f: watchout.File) = changeCount += 1
+    w.onFound = proc(f: watchout.File) = foundCount += 1
     w.onDelete = proc(f: watchout.File) = deleteCount += 1
     handleEvent(w, f)
-    check changeCount == 1
+    check foundCount == 1
     removeFile(f)
     handleEvent(w, f)
     check deleteCount == 1
     handleEvent(w, f)
-    check changeCount == 1
+    check foundCount == 1
     check deleteCount == 1
 
   test "non-existent untracked file does nothing":
@@ -198,6 +208,7 @@ suite "Event handling":
     writeFile(f, "hello")
     let w = newWatchout(d)
     var called = false
+    w.onFound = proc(f: watchout.File) = called = true
     w.onChange = proc(f: watchout.File) = called = true
     handleEvent(w, f)
     check not called
@@ -210,7 +221,7 @@ suite "Event handling":
     let w = newWatchout(d)
     w.ignoreHidden = false
     var called = false
-    w.onChange = proc(f: watchout.File) = called = true
+    w.onFound = proc(f: watchout.File) = called = true
     handleEvent(w, f)
     check called
 
@@ -222,12 +233,12 @@ suite "Event handling":
     writeFile(f1, "code")
     writeFile(f2, "text")
     let w = newWatchout(d, some("*.nim"))
-    var changed: seq[watchout.File] = @[]
-    w.onChange = proc(f: watchout.File) = changed.add(f)
+    var found: seq[watchout.File] = @[]
+    w.onFound = proc(f: watchout.File) = found.add(f)
     handleEvent(w, f1)
     handleEvent(w, f2)
-    check changed.len == 1
-    check getPath(changed[0]) == f1
+    check found.len == 1
+    check getPath(found[0]) == f1
 
   test "pattern with multiple wildcards":
     let d = tempDir()
@@ -237,11 +248,11 @@ suite "Event handling":
     writeFile(f1, "code")
     writeFile(f2, "text")
     let w = newWatchout(d, some("test_*_file.*"))
-    var changed: seq[watchout.File] = @[]
-    w.onChange = proc(f: watchout.File) = changed.add(f)
+    var found: seq[watchout.File] = @[]
+    w.onFound = proc(f: watchout.File) = found.add(f)
     handleEvent(w, f1)
     handleEvent(w, f2)
-    check changed.len == 2
+    check found.len == 2
 
 suite "Watcher integration":
   setup:
@@ -260,17 +271,17 @@ suite "Watcher integration":
       try: removeDir(d)
       except: discard
     let w = newWatchout(d)
-    var changed: seq[watchout.File] = @[]
-    w.onChange = proc(f: watchout.File) = changed.add(f)
+    var found: seq[watchout.File] = @[]
+    w.onFound = proc(f: watchout.File) = found.add(f)
     w.start()
     sleep(1000)
     let f = d / "newfile.txt"
     spTouch(f)
     let deadline = epochTime() + 8.0
-    while changed.len == 0 and epochTime() < deadline:
+    while found.len == 0 and epochTime() < deadline:
       sleep(50)
-    check changed.len > 0
-    check getName(changed[0]) == "newfile.txt"
+    check found.len > 0
+    check getName(found[0]) == "newfile.txt"
 
   test "detects file modification":
     let d = tempDir()
@@ -286,9 +297,9 @@ suite "Watcher integration":
     sleep(1000)
     spTouch(f)
     let deadline = epochTime() + 8.0
-    while changeCount < 2 and epochTime() < deadline:
+    while changeCount < 1 and epochTime() < deadline:
       sleep(50)
-    check changeCount >= 2
+    check changeCount >= 1
 
   test "detects file deletion":
     let d = tempDir()
@@ -316,6 +327,7 @@ suite "Watcher integration":
       except: discard
     let w = newWatchout(d)
     var detected: seq[string] = @[]
+    w.onFound = proc(f: watchout.File) = detected.add(getPath(f))
     w.onChange = proc(f: watchout.File) = detected.add(getPath(f))
     w.start()
     sleep(1000)
@@ -335,7 +347,7 @@ suite "Watcher integration":
         sleep(50)
     check found
 
-  test "pre-existing nested files are picked up by the initial scan":
+  test "pre-existing nested files are tracked silently by the initial scan":
     let d = tempDir()
     defer:
       try: removeDir(d)
@@ -345,10 +357,23 @@ suite "Watcher integration":
     let f = subdir / "nested.txt"
     spTouch(f)
     let w = newWatchout(d)
-    var detected: seq[string] = @[]
-    w.onChange = proc(f: watchout.File) = detected.add(getPath(f))
+    var foundCount = 0
+    var changeCount = 0
+    w.onFound = proc(f: watchout.File) = foundCount += 1
+    w.onChange = proc(f: watchout.File) = changeCount += 1
     w.start()
-    check f in detected
+    # Initial scan is silent: no callbacks for already-tracked files.
+    check foundCount == 0
+    check changeCount == 0
+    # A subsequent modification must fire onChange (not onFound),
+    # proving the nested file was picked up by the scan.
+    sleep(1000)
+    spTouch(f)
+    let deadline = epochTime() + 8.0
+    while changeCount < 1 and epochTime() < deadline:
+      sleep(50)
+    check changeCount >= 1
+    check foundCount == 0
 
   test "files in pre-existing nested dirs fire on modification":
     let d = tempDir()
@@ -360,15 +385,20 @@ suite "Watcher integration":
     let f = subdir / "mod.txt"
     spTouch(f)
     let w = newWatchout(d)
+    var foundCount = 0
     var changeCount = 0
+    w.onFound = proc(f: watchout.File) = foundCount += 1
     w.onChange = proc(f: watchout.File) = changeCount += 1
     w.start()
     sleep(1000)
-    check changeCount >= 1
+    # Silent initial scan: nothing fired yet.
+    check foundCount == 0
+    check changeCount == 0
     spTouch(f)
     let deadline = epochTime() + 8.0
-    while changeCount < 2 and epochTime() < deadline:
+    while changeCount < 1 and epochTime() < deadline:
       sleep(50)
-    check changeCount >= 2
+    check changeCount >= 1
+    check foundCount == 0
 
 cleanTestRoot()

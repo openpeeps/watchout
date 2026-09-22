@@ -1,6 +1,6 @@
 # Package
 
-version       = "0.3.0"
+version       = "0.3.2"
 author        = "George Lemon"
 description   = "A stupid simple filesystem monitor"
 license       = "MIT"

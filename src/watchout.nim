@@ -98,6 +98,17 @@ proc getPath*(file: File): string =
   ## Get the path of the file.
   result = file.path
 
+proc canonicalKey(path: string): string =
+  ## Canonical table key for a watched path. Platform backends deliver
+  ## canonical paths (FSEvents resolves symlinks, e.g. /tmp/... arrives
+  ## as /private/tmp/...), while the initial scan sees walkDir spellings,
+  ## so keys must be resolved or modify events miss the table and newly
+  ## seen files are misclassified as discoveries.
+  try:
+    result = expandFilename(path)
+  except CatchableError:
+    result = absolutePath(path)
+
 proc getName*(file: File): string =
   ## Get the name of the file.
   result = file.path.extractFilename()
@@ -114,24 +125,23 @@ proc handleEvent*(watch: Watchout, path: string) =
   if not path.matchesPattern(watch.pattern):
     return
 
-  if watch.files.hasKey(path):
+  let key = canonicalKey(path)
+  if watch.files.hasKey(key):
     if fileExists(path):
       let lastMod = getFileInfo(path).lastWriteTime
-      if watch.files[path].lastModified < lastMod:
-        watch.files[path].lastModified = lastMod
+      if watch.files[key].lastModified < lastMod:
+        watch.files[key].lastModified = lastMod
         if watch.onChange != nil:
-          watch.onChange(watch.files[path])
+          watch.onChange(watch.files[key])
     else:
       if watch.onDelete != nil:
-        watch.onDelete(watch.files[path])
-      watch.files.del(path)
+        watch.onDelete(watch.files[key])
+      watch.files.del(key)
   elif fileExists(path):
     let file = File(path: path, lastModified: getFileInfo(path).lastWriteTime)
-    watch.files[path] = file
+    watch.files[key] = file
     if watch.onFound != nil:
       watch.onFound(file)
-    if watch.onChange != nil:
-      watch.onChange(file)
 
 proc onWatch(path: cstring, watcher: pointer) {.cdecl, gcsafe.} =
   {.cast(gcsafe).}:
@@ -145,13 +155,23 @@ proc start*(watch: Watchout) =
   ## including directories created after `start` was called.
   if watch.srcDirs.len == 0: return
   GC_ref(watch)
-  # Initial scan: populate files and fire onChange/onFound for
-  # existing files so that subsequent modify/delete events are
-  # correctly tracked and tests expecting 2 events for modify pass.
+  # Initial scan: silently populate tracked files without firing
+  # callbacks. This avoids duplicate precompile + stray notifyAllClients
+  # during serve startup (wsServer not yet ready) and respects the
+  # distinction: Found == discovery, Change == modification.
   for dir in watch.srcDirs:
     if dirExists(dir):
+      # Recursive: FSEvents itself watches subdirectories, so the seed
+      # must too, otherwise nested files (e.g. views/components/*.timl)
+      # are misclassified as discoveries on first change.
       for path in walkDirRec(dir):
-        handleEvent(watch, path)
+        if watch.ignoreHidden and path.isHidden(): continue
+        if not path.matchesPattern(watch.pattern): continue
+        if not fileExists(path): continue
+        let key = canonicalKey(path)
+        if watch.files.hasKey(key): continue
+        let file = File(path: path, lastModified: getFileInfo(path).lastWriteTime)
+        watch.files[key] = file
   watchDirs(watch.srcDirs, onWatch, cast[pointer](watch))
 
 when isMainModule:
