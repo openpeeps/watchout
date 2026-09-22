@@ -309,49 +309,66 @@ suite "Watcher integration":
     check deleted.len > 0
     check getName(deleted[0]) == "delfile.txt"
 
-  when defined(linux):
-    test "Linux: subdirectory content is NOT watched (non-recursive)":
-      let d = tempDir()
-      defer:
-        try: removeDir(d)
-        except: discard
-      let w = newWatchout(d)
-      var detected: seq[string] = @[]
-      w.onChange = proc(f: watchout.File) = detected.add(getPath(f))
-      w.start()
-      sleep(1000)
-      let subdir = d / "subdir"
-      createDir(subdir)
-      sleep(500)
-      let subfile = subdir / "subfile.txt"
-      spTouch(subfile)
-      sleep(3000)
-      check subfile notin detected
-  else:
-    test "macOS/Windows: subdirectory content IS watched (recursive)":
-      let d = tempDir()
-      defer:
-        try: removeDir(d)
-        except: discard
-      let w = newWatchout(d)
-      var detected: seq[string] = @[]
-      w.onChange = proc(f: watchout.File) = detected.add(getPath(f))
-      w.start()
-      sleep(1000)
-      let subdir = d / "subdir"
-      createDir(subdir)
-      sleep(500)
-      let subfile = subdir / "subfile.txt"
-      spTouch(subfile)
-      let deadline = epochTime() + 8.0
-      var found = false
-      while not found and epochTime() < deadline:
-        for p in detected:
-          if p.endsWith("subfile.txt"):
-            found = true
-            break
-        if not found:
-          sleep(50)
-      check found
+  test "subdirectory content IS watched (recursive)":
+    let d = tempDir()
+    defer:
+      try: removeDir(d)
+      except: discard
+    let w = newWatchout(d)
+    var detected: seq[string] = @[]
+    w.onChange = proc(f: watchout.File) = detected.add(getPath(f))
+    w.start()
+    sleep(1000)
+    let subdir = d / "subdir"
+    createDir(subdir)
+    sleep(500)
+    let subfile = subdir / "subfile.txt"
+    spTouch(subfile)
+    let deadline = epochTime() + 8.0
+    var found = false
+    while not found and epochTime() < deadline:
+      for p in detected:
+        if p.endsWith("subfile.txt"):
+          found = true
+          break
+      if not found:
+        sleep(50)
+    check found
+
+  test "pre-existing nested files are picked up by the initial scan":
+    let d = tempDir()
+    defer:
+      try: removeDir(d)
+      except: discard
+    let subdir = d / "nested"
+    createDir(subdir)
+    let f = subdir / "nested.txt"
+    spTouch(f)
+    let w = newWatchout(d)
+    var detected: seq[string] = @[]
+    w.onChange = proc(f: watchout.File) = detected.add(getPath(f))
+    w.start()
+    check f in detected
+
+  test "files in pre-existing nested dirs fire on modification":
+    let d = tempDir()
+    defer:
+      try: removeDir(d)
+      except: discard
+    let subdir = d / "nestedmod"
+    createDir(subdir)
+    let f = subdir / "mod.txt"
+    spTouch(f)
+    let w = newWatchout(d)
+    var changeCount = 0
+    w.onChange = proc(f: watchout.File) = changeCount += 1
+    w.start()
+    sleep(1000)
+    check changeCount >= 1
+    spTouch(f)
+    let deadline = epochTime() + 8.0
+    while changeCount < 2 and epochTime() < deadline:
+      sleep(50)
+    check changeCount >= 2
 
 cleanTestRoot()

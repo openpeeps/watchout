@@ -12,6 +12,7 @@
 ## required because inotify uses simple POSIX I/O (no CFRunLoop).
 
 import std/posix
+import std/os
 
 # ── Linker flags ─────────────────────────────────────────────────────────────
 
@@ -42,6 +43,7 @@ const
   IN_MOVE_SELF*  = 0x00000800'u32
   IN_IGNORED*    = 0x00008000'u32
   IN_CLOSE_WRITE* = 0x00000008'u32
+  IN_ISDIR*       = 0x40000000'u32
 
   InWatchMask = IN_MODIFY or IN_CREATE or IN_DELETE or
                 IN_MOVED_FROM or IN_MOVED_TO or IN_ATTRIB or IN_CLOSE_WRITE
@@ -73,6 +75,25 @@ type
     cb:       pointer
     watcher:  pointer
 
+proc addWatchRecursive(fd: cint, root: string, maps: var seq[WatchDir]) =
+  ## Add an inotify watch for `root` and every subdirectory below it.
+  ## inotify watches are not recursive, so each level needs its own watch.
+  ## Paths already watched are skipped.
+  if not dirExists(root): return
+  var dirs = @[root]
+  for path in walkDirRec(root, yieldFilter = {pcDir}):
+    dirs.add(path)
+  for d in dirs:
+    var known = false
+    for m in maps:
+      if m.base == d:
+        known = true
+        break
+    if known: continue
+    let wd = inotifyAddWatch(fd, d.cstring, InWatchMask)
+    if wd >= 0:
+      maps.add(WatchDir(wd: wd.int, base: d))
+
 proc watcherThread(argPtr: ptr WatchThreadArg) {.thread.} =
   let arg = argPtr[]
   let callback = cast[FileChangedCallback](arg.cb)
@@ -82,11 +103,7 @@ proc watcherThread(argPtr: ptr WatchThreadArg) {.thread.} =
 
   var maps: seq[WatchDir]
   for i in 0 ..< arg.dirCount:
-    let cpath = arg.dirs[i]
-    let d = $cpath
-    let wd = inotifyAddWatch(fd, cpath, InWatchMask)
-    if wd >= 0:
-      maps.add(WatchDir(wd: wd.int, base: d))
+    addWatchRecursive(fd, $arg.dirs[i], maps)
 
   if maps.len == 0:
     discard close(fd)
@@ -102,20 +119,42 @@ proc watcherThread(argPtr: ptr WatchThreadArg) {.thread.} =
     var off = 0
     while off < n:
       let ie = cast[ptr InotifyEvent](addr buf[off])
-      if ie.len > 0:
-        var base = ""
-        for m in maps:
-          if m.wd == ie.wd.int:
-            base = m.base
-            break
-        if base.len > 0:
-          let name = cast[cstring](addr buf[off + sizeof(InotifyEvent)])
-          var path = base
-          if path.len > 0 and path[^1] != '/':
-            path.add '/'
-          path.add $name
-          if callback != nil:
-            callback(cstring(path), arg.watcher)
+      if ie.len == 0:
+        # No filename attached (e.g. IN_IGNORED when a watched dir is
+        # removed): drop the stale watch so a reused wd can't misroute
+        # future events. A re-created dir is re-watched via its parent's
+        # IN_CREATE | IN_ISDIR event.
+        if (ie.mask and IN_IGNORED) != 0:
+          for i in 0 ..< maps.len:
+            if maps[i].wd == ie.wd.int:
+              maps.del(i)
+              break
+        off += sizeof(InotifyEvent)
+        continue
+      var base = ""
+      for m in maps:
+        if m.wd == ie.wd.int:
+          base = m.base
+          break
+      if base.len > 0:
+        let name = cast[cstring](addr buf[off + sizeof(InotifyEvent)])
+        var path = base
+        if path.len > 0 and path[^1] != '/':
+          path.add '/'
+        path.add $name
+        if (ie.mask and IN_ISDIR) != 0:
+          # A directory itself changed. New subdirectories (created or
+          # moved in) get watched recursively; pre-existing files inside
+          # moved-in trees are reported so they are picked up immediately.
+          # Nothing is reported for the directory itself.
+          if (ie.mask and (IN_CREATE or IN_MOVED_TO)) != 0:
+            let before = maps.len
+            addWatchRecursive(fd, path, maps)
+            if maps.len > before and callback != nil:
+              for fpath in walkDirRec(path):
+                callback(cstring(fpath), arg.watcher)
+        elif callback != nil:
+          callback(cstring(path), arg.watcher)
       off += sizeof(InotifyEvent) + ie.len.int
 
   for m in maps:

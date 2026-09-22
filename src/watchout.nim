@@ -140,6 +140,9 @@ proc onWatch(path: cstring, watcher: pointer) {.cdecl, gcsafe.} =
 
 proc start*(watch: Watchout) =
   ## Start monitoring the filesystem for changes.
+  ##
+  ## Watching is recursive: all subdirectories of `srcDirs` are monitored,
+  ## including directories created after `start` was called.
   if watch.srcDirs.len == 0: return
   GC_ref(watch)
   # Initial scan: populate files and fire onChange/onFound for
@@ -147,9 +150,8 @@ proc start*(watch: Watchout) =
   # correctly tracked and tests expecting 2 events for modify pass.
   for dir in watch.srcDirs:
     if dirExists(dir):
-      for kind, path in walkDir(dir):
-        if kind == pcFile:
-          handleEvent(watch, path)
+      for path in walkDirRec(dir):
+        handleEvent(watch, path)
   watchDirs(watch.srcDirs, onWatch, cast[pointer](watch))
 
 when isMainModule:
