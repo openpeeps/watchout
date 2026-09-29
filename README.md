@@ -1,5 +1,5 @@
 <p align="center">
-    <img src="https://raw.githubusercontent.com/openpeep/watchout/main/.github/watchout-logo.png" width="170px"><br>
+    <img src="https://raw.githubusercontent.com/openpeep/watchout/main/.github/watchout-logo.png" width="90px"><br>
     A fast, small, lightweight filesystem monitor. Yellin' for changes!
 </p>
 <p align="center">
